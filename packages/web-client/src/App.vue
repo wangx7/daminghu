@@ -14,9 +14,19 @@ onMounted(() => {
     onHudUpdate: (snapshot) => store.updateHud(snapshot),
     onNotice: (title, body) => store.showNotice(title, body),
     onKillFeed: (item) => store.pushKillFeed(item),
+    onRoomUpdate: (roomSnap) => store.updateRoom(roomSnap),
+    onChatBubble: (evt) => store.pushChatBubble(evt),
+    onMatchEnd: (res) => store.setMatchResult(res),
   });
   store.landmarks = instance.getLandmarks();
   game.value = instance;
+
+  // 识别分享链接或扫码 URL 中的 ?room=XXXXXX 参数，自动弹出快捷进房入口
+  const params = new URLSearchParams(window.location.search);
+  const inviteCode = params.get('room')?.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (inviteCode && inviteCode.length >= 4) {
+    store.pendingInviteCode = inviteCode;
+  }
 });
 
 onBeforeUnmount(() => {

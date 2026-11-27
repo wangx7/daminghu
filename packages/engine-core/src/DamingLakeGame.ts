@@ -2,18 +2,25 @@ import * as THREE from 'three';
 import {
   SKIN_MAP,
   type BgmScene,
+  type ChatBubbleEvent,
   type EquippedWeaponId,
   type GameMode,
   type HudSnapshot,
   type KillFeedItem,
   type LandmarkSummary,
+  type MatchResultSummary,
+  type RoomConfig,
+  type RoomSnapshot,
   type SeasonKey,
   type SkinId,
+  type TeamId,
   type VehicleMode,
 } from '@daminghu/shared';
 import { GuofengBgmEngine } from './bgmEngine';
 import { CombatSystem } from './combatSystem';
 import { renderDamingMinimap } from './minimapRenderer';
+import { P2PRoomClient, type LocalPlayerNetState } from './p2pRoomClient';
+import { RemotePlayerManager } from './remotePlayerManager';
 import { applySkinToPlayer } from './skinRenderer';
 
 import { WorldCollider } from './legacy/collider.js';
@@ -34,6 +41,9 @@ export interface GameCallbacks {
   onHudUpdate?: (snapshot: HudSnapshot) => void;
   onNotice?: (title: string, body: string) => void;
   onKillFeed?: (item: KillFeedItem) => void;
+  onRoomUpdate?: (snapshot: RoomSnapshot) => void;
+  onChatBubble?: (event: ChatBubbleEvent) => void;
+  onMatchEnd?: (result: MatchResultSummary) => void;
 }
 
 const SEASONS: SeasonKey[] = ['spring', 'summer', 'autumn', 'winter'];
@@ -60,6 +70,8 @@ export class DamingLakeGame {
   private minghuShow: any;
   private director: any;
   private combat: CombatSystem;
+  private remotePlayers: RemotePlayerManager;
+  private room: P2PRoomClient;
 
   private keys: Record<string, boolean> = {};
   private virtualInput = { moveX: 0, moveZ: 0 };
@@ -143,6 +155,41 @@ export class DamingLakeGame {
     this.combat.onKillFeed = (item) => this.callbacks.onKillFeed?.(item);
     applySkinToPlayer(this.player, SKIN_MAP[this.skinId]);
     this.combat.mountWeaponToPlayer(this.player.root);
+
+    // 挂载 WebRTC P2P 多人联机系统与 3D 远端角色管理器
+    this.remotePlayers = new RemotePlayerManager(this.scene);
+    this.room = new P2PRoomClient({
+      onRoomUpdate: (snap) => {
+        if (snap.phase === 'playing') {
+          if (this.combat.mode !== 'roam') {
+            this.combat.setMode('roam', this.player.pos.x, this.player.pos.z);
+          }
+          if (snap.config.mode !== 'coop_roam' && this.combat.weaponId === null) {
+            this.combat.setWeapon('spring_blaster');
+          }
+        }
+        this.syncBgmScene();
+        this.callbacks.onRoomUpdate?.(snap);
+        this.emitHud();
+      },
+      onWorldSnapshot: (entities, localPlayerId) => {
+        this.remotePlayers.syncEntities(entities, localPlayerId);
+      },
+      onProjectileFx: (_shooterId, x, y, z, yaw, weaponId) => {
+        this.remotePlayers.spawnProjectileFx(x, y, z, yaw, weaponId);
+      },
+      onLocalRespawn: (x, z, yaw) => {
+        this.player.teleport(x, z, yaw);
+        this.world.primeAround(x, z, 2);
+      },
+      onKillFeed: (item) => this.callbacks.onKillFeed?.(item),
+      onChatBubble: (evt) => {
+        this.remotePlayers.showChatBubble(evt.senderId, evt.text);
+        this.callbacks.onChatBubble?.(evt);
+      },
+      onMatchEnd: (result) => this.callbacks.onMatchEnd?.(result),
+      onNotice: (title, body) => this.callbacks.onNotice?.(title, body),
+    });
 
     this.world.primeAround(this.player.pos.x, this.player.pos.z, 3);
 
@@ -285,9 +332,69 @@ export class DamingLakeGame {
 
   fireWeapon() {
     if (this.combat.weaponId === null) return;
+    if (this.room.isCombatMatch && !this.room.currentAlive) return;
     this.boundUnlockAudio();
     const fireYaw = this.player.yaw;
-    this.combat.firePlayer(this.player.pos, fireYaw);
+    const fired = this.combat.firePlayer(this.player.pos, fireYaw);
+    if (fired && this.room.active && this.combat.weaponId) {
+      this.room.sendFire(this.player.pos.x, this.player.pos.y, this.player.pos.z, fireYaw, this.combat.weaponId);
+    }
+  }
+
+  private getLocalNetState(): LocalPlayerNetState {
+    return {
+      x: this.player.pos.x,
+      y: this.player.pos.y,
+      z: this.player.pos.z,
+      yaw: this.player.yaw,
+      vehicle: this.getVehicleMode(),
+      skinId: this.skinId,
+      weaponId: this.combat.weaponId,
+    };
+  }
+
+  createMultiplayerRoom(hostName: string) {
+    this.boundUnlockAudio();
+    this.room.createRoom(hostName, this.getLocalNetState());
+  }
+
+  joinMultiplayerRoom(roomCode: string, playerName: string) {
+    this.boundUnlockAudio();
+    this.room.joinRoom(roomCode, playerName, this.getLocalNetState());
+  }
+
+  leaveMultiplayerRoom() {
+    this.room.leaveRoom(true);
+    this.remotePlayers.clear();
+    this.syncBgmScene();
+    this.emitHud();
+  }
+
+  updateRoomConfig(patch: Partial<RoomConfig>) {
+    this.room.updateConfig(patch);
+  }
+
+  switchRoomTeam(team: TeamId) {
+    this.room.switchTeam(team);
+  }
+
+  startMultiplayerMatch() {
+    this.boundUnlockAudio();
+    this.room.startMatch();
+  }
+
+  sendQuickChat(text: string) {
+    this.room.sendQuickChat(text);
+  }
+
+  teleportToPlayer(playerId: string) {
+    const pos = this.remotePlayers.getPlayerPosition(playerId);
+    if (!pos) return;
+    this.director.stopTour();
+    this.player.teleport(pos.x + 3.2, pos.z + 3.2, this.player.yaw);
+    this.world.primeAround(pos.x, pos.z, 2);
+    this.bgm.playUiClick();
+    this.callbacks.onNotice?.('好友传送', '已瞬间闪现到好友身边！');
   }
 
   setGameMode(mode: GameMode) {
@@ -486,18 +593,19 @@ export class DamingLakeGame {
   }
 
   renderMinimap(canvas: HTMLCanvasElement) {
+    const mergedTargets = [...this.combat.getMinimapTargets(), ...this.remotePlayers.getMinimapDots()];
     renderDamingMinimap(
       canvas,
       this.player.pos.x,
       this.player.pos.z,
       this.player.yaw,
       this.visitedIds,
-      this.combat.getMinimapTargets(),
+      mergedTargets,
     );
   }
 
   private syncBgmScene() {
-    if (this.combat.mode === 'practice_solo' || this.combat.mode === 'practice_team') {
+    if (this.room.isCombatMatch || this.combat.mode === 'practice_solo' || this.combat.mode === 'practice_team') {
       this.bgm.setScene('battle');
     } else if (this.sky.mode === 'night' || this.minghuShow.active) {
       this.bgm.setScene('night');
@@ -621,6 +729,7 @@ export class DamingLakeGame {
     const seasonKey = SEASONS[this.seasonIdx];
     const palette = SEASON_PALETTES[seasonKey];
     const actionInfo = this.resolveActionInfo();
+    const mergedTargets = [...this.combat.getMinimapTargets(), ...this.remotePlayers.getMinimapDots()];
 
     this.callbacks.onHudUpdate?.({
       x: Math.round(this.player.pos.x),
@@ -635,7 +744,7 @@ export class DamingLakeGame {
       nearPrompt: actionInfo.nearPrompt,
       actionLabel: actionInfo.actionLabel,
       actionCanAct: actionInfo.actionCanAct,
-      hp: Math.round(this.combat.playerHp),
+      hp: this.room.isCombatMatch ? Math.round(this.room.currentHp) : Math.round(this.combat.playerHp),
       maxHp: this.combat.playerMaxHp,
       skinId: this.skinId,
       weaponId: this.combat.weaponId,
@@ -652,7 +761,7 @@ export class DamingLakeGame {
       visitedIds: Array.from(this.visitedIds),
       totalLandmarks: (LANDMARKS as any[]).length,
       scoreboard: { ...this.combat.scoreboard },
-      targets: this.combat.getMinimapTargets(),
+      targets: mergedTargets,
     });
   }
 
@@ -681,6 +790,8 @@ export class DamingLakeGame {
     this.sky.update(dt, focusPos);
     this.sound.update(this.player);
     this.combat.update(dt, this.elapsed, this.player.pos, this.camera);
+    this.room.update(dt, this.getLocalNetState());
+    this.remotePlayers.update(dt, this.elapsed);
     this.checkLandmarkDiscovery();
 
     this.hudEmitAcc += dt;
@@ -703,6 +814,8 @@ export class DamingLakeGame {
     window.removeEventListener('blur', this.boundBlur);
     this.renderer.domElement.removeEventListener('pointerdown', this.boundPointerDown);
     this.renderer.domElement.removeEventListener('wheel', this.boundWheel);
+    this.room.dispose();
+    this.remotePlayers.clear();
     this.bgm.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();

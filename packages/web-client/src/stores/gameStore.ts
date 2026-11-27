@@ -1,8 +1,19 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import type { HudSnapshot, KillFeedItem, LandmarkSummary, QuizCategory, SkinId, WeaponId } from '@daminghu/shared';
+import {
+  DEFAULT_ROOM_CONFIG,
+  type ChatBubbleEvent,
+  type HudSnapshot,
+  type KillFeedItem,
+  type LandmarkSummary,
+  type MatchResultSummary,
+  type QuizCategory,
+  type RoomSnapshot,
+  type SkinId,
+  type WeaponId,
+} from '@daminghu/shared';
 
-export type GarageTab = 'skins' | 'weapons' | 'modes' | 'scene' | 'guardian' | 'guide';
+export type GarageTab = 'skins' | 'weapons' | 'modes' | 'multiplayer' | 'scene' | 'guardian' | 'guide';
 
 export interface ActiveQuizRequest {
   title: string;
@@ -94,6 +105,60 @@ export const useGameStore = defineStore('game', () => {
   const antiAddictionMinutes = ref(15);
   const activeQuiz = ref<ActiveQuizRequest | null>(null);
 
+  // WebRTC P2P 多人联机状态
+  const NICK_STORAGE_KEY = 'daminghu_nickname_v1';
+  const savedNick = (() => {
+    try {
+      return localStorage.getItem(NICK_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  })();
+  const playerNickname = ref(savedNick || `团团${Math.floor(100 + Math.random() * 900)}`);
+  const pendingInviteCode = ref('');
+  const chatBubbles = ref<ChatBubbleEvent[]>([]);
+  const matchResult = ref<MatchResultSummary | null>(null);
+  const room = ref<RoomSnapshot>({
+    status: 'disconnected',
+    roomCode: '',
+    isHost: false,
+    localPlayerId: '',
+    localPlayerName: playerNickname.value,
+    phase: 'idle',
+    config: { ...DEFAULT_ROOM_CONFIG },
+    members: [],
+    redScore: 0,
+    blueScore: 0,
+    timeRemainingSec: 180,
+    errorMessage: '',
+  });
+
+  function setPlayerNickname(name: string) {
+    const clean = name.trim().slice(0, 12);
+    if (!clean) return;
+    playerNickname.value = clean;
+    try {
+      localStorage.setItem(NICK_STORAGE_KEY, clean);
+    } catch {
+      // ignore
+    }
+  }
+
+  function updateRoom(snap: RoomSnapshot) {
+    room.value = snap;
+  }
+
+  function pushChatBubble(evt: ChatBubbleEvent) {
+    chatBubbles.value = [evt, ...chatBubbles.value].slice(0, 4);
+    window.setTimeout(() => {
+      chatBubbles.value = chatBubbles.value.filter((c) => c.id !== evt.id);
+    }, 4600);
+  }
+
+  function setMatchResult(result: MatchResultSummary | null) {
+    matchResult.value = result;
+  }
+
   let noticeTimer: number | null = null;
 
   function persistUnlocks() {
@@ -171,6 +236,11 @@ export const useGameStore = defineStore('game', () => {
     antiAddictionEnabled,
     antiAddictionMinutes,
     activeQuiz,
+    playerNickname,
+    pendingInviteCode,
+    chatBubbles,
+    matchResult,
+    room,
     updateHud,
     showNotice,
     pushKillFeed,
@@ -179,5 +249,9 @@ export const useGameStore = defineStore('game', () => {
     unlockAllForDemo,
     requestQuiz,
     persistUnlocks,
+    setPlayerNickname,
+    updateRoom,
+    pushChatBubble,
+    setMatchResult,
   };
 });

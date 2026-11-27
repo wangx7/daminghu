@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
+  QUICK_CHAT_PHRASES,
   SEASON_SKINS,
   SKIN_MAP,
   WEAPON_CATALOG,
@@ -10,13 +11,14 @@ import {
   type GameMode,
   type QuizCategory,
   type SkinId,
-  type WeaponId,
 } from '@daminghu/shared';
 import type { DamingLakeGame } from '@daminghu/engine-core';
 import { useGameStore, type GarageTab } from '../stores/gameStore';
 import Showcase3D from './Showcase3D.vue';
 import QuizModal from './QuizModal.vue';
 import MobileControls from './MobileControls.vue';
+import MultiplayerPanel from './MultiplayerPanel.vue';
+import MatchResultModal from './MatchResultModal.vue';
 
 const props = defineProps<{
   game: DamingLakeGame | null;
@@ -25,6 +27,7 @@ const props = defineProps<{
 const store = useGameStore();
 const minimapCanvas = ref<HTMLCanvasElement | null>(null);
 const bgmVol = ref(26);
+const quickChatOpen = ref(false);
 
 // QQ 飞车车库左侧 3D 展台预览状态（可先 3D 预览再决定解锁/穿戴）
 const previewSkinId = ref<SkinId>(store.hud.skinId);
@@ -35,12 +38,30 @@ const previewSkin = computed(() => SKIN_MAP[previewSkinId.value]);
 const previewWeapon = computed(() => (previewWeaponId.value ? WEAPON_MAP[previewWeaponId.value] : null));
 const equippedWeapon = computed(() => (store.hud.weaponId ? WEAPON_MAP[store.hud.weaponId] : null));
 
+const isOnlineRoom = computed(() => store.room.status === 'connected');
+const isOnlinePlaying = computed(() => isOnlineRoom.value && store.room.phase === 'playing');
+const onlineHumanCount = computed(() => store.room.members.filter((m) => !m.isBot).length);
+
 const matchTimerText = computed(() => {
-  const s = Math.ceil(store.hud.scoreboard.timeRemainingSec);
+  const sec = isOnlinePlaying.value ? store.room.timeRemainingSec : store.hud.scoreboard.timeRemainingSec;
+  const s = Math.ceil(sec);
   const mm = String(Math.floor(s / 60)).padStart(2, '0');
   const ss = String(s % 60).padStart(2, '0');
   return `${mm}:${ss}`;
 });
+
+function acceptPendingInvite() {
+  const code = store.pendingInviteCode;
+  if (!code) return;
+  store.pendingInviteCode = '';
+  props.game?.joinMultiplayerRoom(code, store.playerNickname);
+  openGarage('multiplayer');
+}
+
+function sendPhrase(phrase: string) {
+  props.game?.sendQuickChat(phrase);
+  quickChatOpen.value = false;
+}
 
 // 儿童护眼防沉迷计时器
 let playSeconds = 0;
@@ -188,9 +209,27 @@ function downloadPostcard() {
       </div>
     </div>
 
-    <!-- 顶部中央：自由漫游时完全留空！仅在打鸟抓鱼或对战时显示轻量化计分条 -->
+    <!-- 顶部中央：自由漫游时留空；联机对战 / 打鸟抓鱼 / AI 演练时显示轻量化计分条与聊天气泡 -->
     <div class="hud-tc">
-      <div v-if="store.hud.scoreboard.mode === 'hunt'" class="hunt-bar">
+      <div v-if="isOnlinePlaying && store.room.config.mode === 'team'" class="scoreboard-bar">
+        <div class="team-score red">
+          <span>超然红</span>
+          <strong>{{ store.room.redScore }}</strong>
+        </div>
+        <div class="match-timer">{{ matchTimerText }}</div>
+        <div class="team-score blue">
+          <strong>{{ store.room.blueScore }}</strong>
+          <span>历下蓝</span>
+        </div>
+      </div>
+
+      <div v-else-if="isOnlinePlaying && store.room.config.mode === 'ffa'" class="hunt-bar">
+        <span>⚔️ 个人混战</span>
+        <span>⏱ {{ matchTimerText }}</span>
+        <span>❤️ {{ store.hud.hp }}</span>
+      </div>
+
+      <div v-else-if="store.hud.scoreboard.mode === 'hunt'" class="hunt-bar">
         <span>🕊️ 惊鸟 {{ store.hud.scoreboard.birdsCaught }}</span>
         <span>🐟 锦鲤 {{ store.hud.scoreboard.fishCaught }}</span>
       </div>
@@ -210,9 +249,22 @@ function downloadPostcard() {
         </div>
       </div>
 
+      <!-- URL 邀请扫码进房横幅 -->
+      <div v-if="store.pendingInviteCode && !isOnlineRoom" class="invite-banner interactive">
+        <span>好友邀你进房 <b>{{ store.pendingInviteCode }}</b></span>
+        <button class="primary-btn" @click="acceptPendingInvite">一键加入</button>
+        <button class="unequip-btn" @click="store.pendingInviteCode = ''">忽略</button>
+      </div>
+
       <div v-if="store.killFeed.length" class="kill-feed">
         <div v-for="item in store.killFeed" :key="item.id" class="kill-item" :class="item.team">
           {{ item.text }}
+        </div>
+      </div>
+
+      <div v-if="store.chatBubbles.length" class="kill-feed">
+        <div v-for="c in store.chatBubbles" :key="c.id" class="chat-feed-item">
+          <b>{{ c.senderName }}：</b>{{ c.text }}
         </div>
       </div>
     </div>
@@ -223,10 +275,30 @@ function downloadPostcard() {
       <span>{{ store.notice.body }}</span>
     </div>
 
-    <!-- 右上角：紧凑小地图 + 唯一统一「车库·设置」入口 -->
+    <!-- 右上角：紧凑小地图 + 联机状态入口 + 统一「车库·设置」入口 -->
     <div class="hud-tr">
       <div class="minimap-card interactive">
         <canvas ref="minimapCanvas" class="minimap-canvas" width="220" height="118" @click="store.landmarksOpen = true" />
+      </div>
+      <div class="tr-btn-row">
+        <button
+          class="mp-entry-btn"
+          :class="{ online: isOnlineRoom }"
+          @click="openGarage('multiplayer')"
+        >
+          <span>{{ isOnlineRoom ? `🌐 ${store.room.roomCode} (${onlineHumanCount}人)` : '🌐 联机开黑' }}</span>
+        </button>
+        <button v-if="isOnlineRoom" class="mp-chat-toggle" @click="quickChatOpen = !quickChatOpen">💬</button>
+      </div>
+      <div v-if="isOnlineRoom && quickChatOpen" class="quick-chat-popover interactive">
+        <button
+          v-for="p in QUICK_CHAT_PHRASES"
+          :key="p"
+          class="quick-chat-chip"
+          @click="sendPhrase(p)"
+        >
+          {{ p }}
+        </button>
       </div>
       <button class="garage-entry-btn" @click="openGarage('skins')">
         <span class="gear-dot">⚙</span>
@@ -301,6 +373,7 @@ function downloadPostcard() {
               <button :class="{ active: store.garageTab === 'skins' }" @click="store.garageTab = 'skins'">皮肤库</button>
               <button :class="{ active: store.garageTab === 'weapons' }" @click="store.garageTab = 'weapons'">武器库</button>
               <button :class="{ active: store.garageTab === 'modes' }" @click="store.garageTab = 'modes'">玩法载具</button>
+              <button :class="{ active: store.garageTab === 'multiplayer' }" @click="store.garageTab = 'multiplayer'">联机大厅</button>
               <button :class="{ active: store.garageTab === 'scene' }" @click="store.garageTab = 'scene'">景致丝竹</button>
               <button :class="{ active: store.garageTab === 'guardian' }" @click="store.garageTab = 'guardian'">出题护眼</button>
               <button :class="{ active: store.garageTab === 'guide' }" @click="store.garageTab = 'guide'">游玩教程</button>
@@ -435,6 +508,11 @@ function downloadPostcard() {
               <button class="guofeng-btn" @click="game?.feedFish(); store.garageOpen = false">湖畔喂鱼 (H)</button>
               <button class="primary-btn" @click="takePostcard">📷 拍宣纸明信片</button>
             </div>
+          </div>
+
+          <!-- Tab 3.5: WebRTC P2P 多人联机大厅 -->
+          <div v-else-if="store.garageTab === 'multiplayer'" class="garage-body">
+            <MultiplayerPanel :game="game" />
           </div>
 
           <!-- Tab 4: 景致与梦幻西游风丝竹 BGM -->
@@ -636,5 +714,8 @@ function downloadPostcard() {
 
     <!-- 明湖书院趣味出题弹窗（解锁皮肤/武器 & 防沉迷） -->
     <QuizModal />
+
+    <!-- 多人联机对局结算弹窗 -->
+    <MatchResultModal :game="game" />
   </div>
 </template>
