@@ -60,8 +60,6 @@ function stopDesktopFire() {
 const isOnlineRoom = computed(() => store.room.status === 'connected');
 const isOnlinePlaying = computed(() => isOnlineRoom.value && store.room.phase === 'playing');
 const onlineHumanCount = computed(() => store.room.members.filter((m) => !m.isBot).length);
-const isShowcaseTab = computed(() => store.garageTab === 'skins' || store.garageTab === 'weapons');
-const showShowcase3D = computed(() => store.garageOpen && isShowcaseTab.value);
 const isFullscreen = ref(false);
 
 function syncFullscreenState() {
@@ -507,10 +505,10 @@ function downloadPostcard() {
     <!-- 手机端 / 触控设备专属多点触控系统（摇杆 / 跑车双区驾驶 / 飞机爬升下降跳伞 / 划船互动） -->
     <MobileControls :game="game" />
 
-    <!-- ===== 统一「玩法」大厅（桌面端左 3D 展台 + 右配置；手机端按标签智能隐藏展台，全屏顺滑滚动） ===== -->
+    <!-- ===== 统一「玩法」大厅（左 3D 展台常显 + 右配置） ===== -->
     <div v-if="store.garageOpen" class="modal-backdrop" @click.self="store.garageOpen = false">
-      <div class="qq-garage" :class="{ 'no-mobile-showcase': !isShowcaseTab }">
-        <!-- 左侧：3D 旋转展示台（手机端仅在皮肤库/武器库显示，其他标签自动让出 100% 空间） -->
+      <div class="qq-garage">
+        <!-- 左侧：3D 旋转展示台（全端全标签常显） -->
         <div class="garage-left">
           <div class="garage-brand">
             <span class="brand-tag">大明湖 · 3D 试衣与军械台</span>
@@ -525,7 +523,6 @@ function downloadPostcard() {
           </div>
 
           <Showcase3D
-            v-if="showShowcase3D"
             :skin-id="previewSkinId"
             :weapon-id="previewWeaponId"
           />

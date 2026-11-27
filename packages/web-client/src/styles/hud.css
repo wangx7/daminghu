@@ -1379,7 +1379,7 @@ body,
   }
 }
 
-/* ===== 玩法大厅与弹窗：手机端原生全屏 / 智能隐藏 3D 展台适配 ===== */
+/* ===== 玩法大厅与弹窗：手机端适配（3D 展台全标签常显） ===== */
 @media (max-width: 960px), (max-height: 540px) {
   .qq-garage {
     grid-template-columns: 215px minmax(0, 1fr);
@@ -1388,16 +1388,6 @@ body,
     max-width: 940px;
     max-height: 560px;
     border-radius: 16px;
-  }
-
-  /* 手机端在非皮肤/武器标签下自动隐藏 3D 展台，让玩法与联机页面获得 100% 宽敞空间！ */
-  .qq-garage.no-mobile-showcase {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
-  }
-
-  .qq-garage.no-mobile-showcase .garage-left {
-    display: none;
   }
 
   .garage-left {
@@ -1464,10 +1454,6 @@ body,
     width: calc(100vw - 16px);
     height: calc(100dvh - max(24px, env(safe-area-inset-top) + env(safe-area-inset-bottom) + 12px));
     max-height: none;
-  }
-
-  .qq-garage.no-mobile-showcase {
-    grid-template-rows: minmax(0, 1fr);
   }
 
   .garage-left {
