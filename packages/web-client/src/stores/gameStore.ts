@@ -68,6 +68,7 @@ export const useGameStore = defineStore('game', () => {
     skinId: 'summer_lotus',
     weaponId: null, // 默认空手、无武器、无对战
     weaponCooldownRatio: 0,
+    aimTarget: null,
     season: 'summer',
     seasonLabel: '荷风盛夏',
     timeLabel: '辰巳 · 清晨',

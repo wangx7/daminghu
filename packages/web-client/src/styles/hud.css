@@ -1959,6 +1959,81 @@ body,
   --ch-gap: 13px;
 }
 
+.aim-crosshair.locked-enemy {
+  --ch-color: #ff4d5a;
+  --ch-gap: 5px;
+}
+
+.aim-crosshair.locked-wildlife {
+  --ch-color: #fde047;
+  --ch-gap: 5px;
+}
+
+.aim-crosshair.locked.bloom {
+  --ch-gap: 10px;
+}
+
+.aim-crosshair .ch-lock-ring {
+  position: absolute;
+  left: -13px;
+  top: -13px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ch-color);
+  opacity: 0.72;
+  box-shadow: 0 0 8px var(--ch-color);
+  transition: transform 0.1s ease-out;
+}
+
+.aim-target-tag {
+  position: absolute;
+  top: 22px;
+  left: 0;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(10, 18, 28, 0.78);
+  border: 1px solid rgba(255, 77, 90, 0.65);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.aim-target-tag.wildlife {
+  border-color: rgba(253, 224, 71, 0.65);
+}
+
+.aim-target-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: #fecaca;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+.aim-target-tag.wildlife .aim-target-name {
+  color: #fef08a;
+}
+
+.aim-target-hp {
+  width: 56px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  overflow: hidden;
+}
+
+.aim-target-hp > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ef4444, #f97316);
+  transition: width 0.08s linear;
+}
+
 .aim-crosshair .ch-dot {
   position: absolute;
   left: -2px;

@@ -90,7 +90,8 @@ function resetJoy(e?: PointerEvent) {
 
 // ===== 长按虚拟按键状态 =====
 const held = reactive<Record<string, boolean>>({});
-let fireInterval: number | null = null;
+let firePointerId: number | null = null;
+let fireLastPos = { x: 0, y: 0 };
 
 function setHold(code: string, down: boolean, e?: PointerEvent) {
   if (e) {
@@ -134,21 +135,33 @@ function onPrimaryUp(e: PointerEvent) {
 function onFireDown(e: PointerEvent) {
   e.stopPropagation();
   e.preventDefault();
+  const target = e.currentTarget as HTMLElement | null;
+  target?.setPointerCapture?.(e.pointerId);
+  firePointerId = e.pointerId;
+  fireLastPos = { x: e.clientX, y: e.clientY };
   held.Fire = true;
-  props.game?.fireWeapon();
-  if (fireInterval !== null) window.clearInterval(fireInterval);
-  fireInterval = window.setInterval(() => {
-    if (held.Fire) props.game?.fireWeapon();
-  }, 90);
+  props.game?.setVirtualFire(true);
+}
+
+function onFireMove(e: PointerEvent) {
+  if (e.pointerId !== firePointerId || !held.Fire) return;
+  e.stopPropagation();
+  e.preventDefault();
+  const dx = e.clientX - fireLastPos.x;
+  const dy = e.clientY - fireLastPos.y;
+  fireLastPos = { x: e.clientX, y: e.clientY };
+  // 按住开火键同时滑动拇指，即可边连发边平滑跟枪瞄准移动目标！
+  if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
+    props.game?.rotateCamera(dx * 0.9, dy * 0.9);
+  }
 }
 
 function onFireUp(e?: PointerEvent) {
+  if (e && firePointerId !== null && e.pointerId !== firePointerId) return;
   if (e) e.stopPropagation();
+  firePointerId = null;
   held.Fire = false;
-  if (fireInterval !== null) {
-    window.clearInterval(fireInterval);
-    fireInterval = null;
-  }
+  props.game?.setVirtualFire(false);
 }
 
 function onTap(fn: () => void, e: PointerEvent) {
@@ -287,9 +300,9 @@ onBeforeUnmount(() => {
             :class="{ active: held.Fire, cooling: store.hud.weaponCooldownRatio > 0.02 }"
             :style="{ '--cd-deg': `${Math.round(store.hud.weaponCooldownRatio * 360)}deg` }"
             @pointerdown="onFireDown"
+            @pointermove="onFireMove"
             @pointerup="onFireUp"
             @pointercancel="onFireUp"
-            @pointerleave="onFireUp"
           >
             <span>开火</span>
           </button>

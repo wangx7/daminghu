@@ -276,6 +276,8 @@ export class TuanPlayer {
     this.camYaw = 0;
     this.camPitch = 0.14;
     this.camDist = 15;
+    this.armed = false;          // 持枪状态：平滑切换越肩第三人称战斗视角（人物偏左下，绝不遮挡准星）
+    this.aimBlend = 0;           // 0 = 漫游居中视角, 1 = 越肩射击视角
     this.manualLookCooldown = 0; // 玩家主动拖动镜头后暂缓跑车自动回正，绝不抢镜头！
 
     this._syncTransform(0, 0);
@@ -1005,14 +1007,22 @@ export class TuanPlayer {
         const nf = fwd / len, nr = right / len;
         mx = fxCam * nf + rxCam * nr;
         mz = fzCam * nf + rzCam * nr;
-        const targetYaw = Math.atan2(mx, mz);
+        // 持枪战斗时始终面朝准星方向，支持左右横移走位对枪；空手漫游时面朝移动方向
+        const targetYaw = this.armed ? (this.camYaw + Math.PI) : Math.atan2(mx, mz);
         let diff = targetYaw - this.yaw;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        this.yaw += diff * Math.min(1, dt * 11);
+        this.yaw += diff * Math.min(1, dt * (this.armed ? 14 : 11));
         this.speed = THREE.MathUtils.lerp(this.speed, walkSpd, dt * 8);
         this.walkPhase += dt * (shift ? 15 : 11);
       } else {
+        if (this.armed) {
+          const aimYaw = this.camYaw + Math.PI;
+          let diff = aimYaw - this.yaw;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          this.yaw += diff * Math.min(1, dt * 10);
+        }
         this.speed = THREE.MathUtils.lerp(this.speed, 0, dt * 8);
       }
 
@@ -1158,12 +1168,48 @@ export class TuanPlayer {
     }
   }
 
-  updateCamera(camera) {
+  updateCamera(camera, dt = 0.016) {
+    const canOverShoulder =
+      this.armed &&
+      !this.inCar &&
+      !this.inHeli &&
+      !this.ridingBus &&
+      !this.ridingCruise &&
+      this.ridingFerrisCabin < 0 &&
+      !this.sittingSeat;
+    const blendTarget = canOverShoulder ? 1 : 0;
+    this.aimBlend = THREE.MathUtils.lerp(this.aimBlend ?? 0, blendTarget, Math.min(1, dt * 9));
+    const ab = this.aimBlend;
+
     const extraDist = this.inHeli ? 6 : (this.inCar ? 2.5 : 0);
-    const desiredDist = this.camDist + extraDist;
-    const targetY = this.pos.y + 1.8;
+    const roamDist = this.camDist + extraDist;
+    const combatDist = THREE.MathUtils.clamp(this.camDist * 0.62, 6.2, 11.5);
+    const desiredDist = THREE.MathUtils.lerp(roamDist, combatDist, ab);
+
+    // 越肩右偏 + 抬高枢轴：让主角稳稳位于屏幕左下方，完全让出正中央准星与远处视野！
+    const rxCam = Math.cos(this.camYaw);
+    const rzCam = -Math.sin(this.camYaw);
+    let shoulderRight = 1.55 * ab;
+    const pivotY = this.pos.y + 1.8 + 0.68 * ab;
+    if (this.collider && !this.inHeli && shoulderRight > 0.05) {
+      const safeRight = this.collider.castCameraDistance(
+        this.pos.x,
+        pivotY,
+        this.pos.z,
+        rxCam,
+        0,
+        rzCam,
+        shoulderRight + 0.35,
+        0.35,
+      );
+      shoulderRight = Math.max(0, Math.min(shoulderRight, safeRight - 0.35));
+    }
+    const pivotX = this.pos.x + rxCam * shoulderRight;
+    const pivotZ = this.pos.z + rzCam * shoulderRight;
+
+    // 持枪时去掉漫游模式的 +0.6 俯视偏置，自然平视即可瞄准远处敌人，无需把镜头压得很平
     const dirX = Math.sin(this.camYaw) * Math.cos(this.camPitch);
-    const dirY = (0.6 + Math.sin(this.camPitch) * desiredDist) / desiredDist;
+    const dirY = (0.6 * (1 - ab) + Math.sin(this.camPitch) * desiredDist) / desiredDist;
     const dirZ = Math.cos(this.camYaw) * Math.cos(this.camPitch);
     const dirLen = Math.hypot(dirX, dirY, dirZ) || 1;
     const nx = dirX / dirLen, ny = dirY / dirLen, nz = dirZ / dirLen;
@@ -1171,15 +1217,22 @@ export class TuanPlayer {
     // 第三人称 Spring-Arm 防穿墙射线：遇到景墙、院墙、屋檐或古城墙平滑前推镜头，离开后柔和恢复！
     let safeDist = desiredDist;
     if (this.collider && !this.inHeli) {
-      safeDist = this.collider.castCameraDistance(this.pos.x, targetY, this.pos.z, nx, ny, nz, desiredDist, 2.3);
+      safeDist = this.collider.castCameraDistance(pivotX, pivotY, pivotZ, nx, ny, nz, desiredDist, 2.2);
     }
-    const lerpRate = safeDist < this.smoothCamDist ? 0.42 : 0.14;
+    const lerpRate = safeDist < this.smoothCamDist ? 0.42 : 0.16;
     this.smoothCamDist = THREE.MathUtils.lerp(this.smoothCamDist, safeDist, lerpRate);
 
-    const cx = this.pos.x + nx * this.smoothCamDist;
-    const cy = targetY + ny * this.smoothCamDist;
-    const cz = this.pos.z + nz * this.smoothCamDist;
-    camera.position.set(cx, Math.max(1.15, cy), cz);
-    camera.lookAt(this.pos.x, targetY, this.pos.z);
+    const cx = pivotX + nx * this.smoothCamDist;
+    const cy = Math.max(1.15, pivotY + ny * this.smoothCamDist);
+    const cz = pivotZ + nz * this.smoothCamDist;
+    camera.position.set(cx, cy, cz);
+
+    // 持枪时沿视线方向望向远方 80m 处，彻底避免仰视打鸟/高处敌人时镜头被地面高度卡平！
+    const lookForward = 80 * ab;
+    camera.lookAt(
+      pivotX - nx * lookForward,
+      pivotY - ny * lookForward,
+      pivotZ - nz * lookForward,
+    );
   }
 }

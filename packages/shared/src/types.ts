@@ -46,6 +46,13 @@ export interface MinimapTargetDot {
   alive: boolean;
 }
 
+export interface AimTargetInfo {
+  kind: 'enemy' | 'wildlife';
+  name: string;
+  distance: number;
+  hpRatio?: number;
+}
+
 export interface HudSnapshot {
   x: number;
   y: number;
@@ -68,6 +75,7 @@ export interface HudSnapshot {
   skinId: SkinId;
   weaponId: EquippedWeaponId;
   weaponCooldownRatio: number;
+  aimTarget: AimTargetInfo | null;
   season: SeasonKey;
   seasonLabel: string;
   timeLabel: string;

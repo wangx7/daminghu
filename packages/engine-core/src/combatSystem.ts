@@ -459,36 +459,69 @@ export class CombatSystem {
     this.bots = [];
   }
 
-  /** 准星中心射线目标距离吸附：优先锁定准星正对的 AI 靶子或飞鸟锦鲤，消除第三人称视差 */
-  findAimTargetPoint(rayOrigin: THREE.Vector3, rayDir: THREE.Vector3, maxRange: number): THREE.Vector3 | null {
+  /** 准星中心射线目标锁定：返回精确瞄准点、目标名与距离，支持随距离微幅放宽磁吸半径 */
+  findAimTarget(
+    rayOrigin: THREE.Vector3,
+    rayDir: THREE.Vector3,
+    maxRange: number,
+  ): { point: THREE.Vector3; kind: 'enemy' | 'wildlife'; name: string; distance: number; hpRatio?: number } | null {
     let bestT = maxRange;
-    let bestPoint: THREE.Vector3 | null = null;
+    let best: { point: THREE.Vector3; kind: 'enemy' | 'wildlife'; name: string; distance: number; hpRatio?: number } | null = null;
 
-    const testCandidate = (cx: number, cy: number, cz: number, radius: number) => {
+    const testCandidate = (
+      cx: number,
+      cy: number,
+      cz: number,
+      baseRadius: number,
+      maxRadius: number,
+      kind: 'enemy' | 'wildlife',
+      name: string,
+      hpRatio?: number,
+    ) => {
       const rx = cx - rayOrigin.x;
       const ry = cy - rayOrigin.y;
       const rz = cz - rayOrigin.z;
       const t = rx * rayDir.x + ry * rayDir.y + rz * rayDir.z;
       if (t <= 2 || t >= bestT) return;
+      const radius = Math.min(maxRadius, baseRadius + t * 0.024);
       const px = rayOrigin.x + rayDir.x * t - cx;
       const py = rayOrigin.y + rayDir.y * t - cy;
       const pz = rayOrigin.z + rayDir.z * t - cz;
       if (px * px + py * py + pz * pz <= radius * radius) {
         bestT = t;
-        bestPoint = new THREE.Vector3(cx, cy, cz);
+        best = {
+          point: new THREE.Vector3(cx, cy, cz),
+          kind,
+          name,
+          distance: t,
+          hpRatio,
+        };
       }
     };
 
     for (const bot of this.bots) {
       if (!bot.alive) continue;
       if (this.playerTeam !== 'none' && bot.team === this.playerTeam) continue;
-      testCandidate(bot.pos.x, bot.pos.y + 1.35, bot.pos.z, 2.35);
+      testCandidate(bot.pos.x, bot.pos.y + 1.35, bot.pos.z, 1.9, 4.0, 'enemy', bot.name, bot.hp / bot.maxHp);
     }
     for (const w of this.wildlife) {
       if (!w.alive) continue;
-      testCandidate(w.root.position.x, w.root.position.y, w.root.position.z, w.kind === 'bird' ? 3.2 : 3.0);
+      testCandidate(
+        w.root.position.x,
+        w.root.position.y,
+        w.root.position.z,
+        w.kind === 'bird' ? 2.6 : 2.5,
+        4.8,
+        'wildlife',
+        w.name,
+      );
     }
-    return bestPoint;
+    return best;
+  }
+
+  /** 准星中心射线目标距离吸附：优先锁定准星正对的 AI 靶子或飞鸟锦鲤，消除第三人称视差 */
+  findAimTargetPoint(rayOrigin: THREE.Vector3, rayDir: THREE.Vector3, maxRange: number): THREE.Vector3 | null {
+    return this.findAimTarget(rayOrigin, rayDir, maxRange)?.point ?? null;
   }
 
   firePlayer(playerPos: THREE.Vector3, yaw: number, pitch = 0.06, aimDirOverride?: THREE.Vector3): boolean {
@@ -499,11 +532,6 @@ export class CombatSystem {
     let dir: THREE.Vector3;
     if (aimDirOverride) {
       dir = aimDirOverride.clone().normalize();
-      if (weapon.gravity > 0) {
-        // 抛物线武器按重力适度抬高仰角，保证准星指哪大致落哪
-        dir.y += weapon.id === 'lotus_mortar' ? 0.16 : 0.025;
-        dir.normalize();
-      }
     } else {
       dir = new THREE.Vector3(
         Math.sin(yaw) * Math.cos(pitch),
@@ -533,10 +561,15 @@ export class CombatSystem {
   private getSharedProjectileAssets(weapon: WeaponConfig): { geo: THREE.BufferGeometry; mat: THREE.MeshBasicMaterial } {
     let geo = this.projGeoCache.get(weapon.id);
     if (!geo) {
-      geo =
-        weapon.id === 'quehua_bow'
-          ? new THREE.BoxGeometry(0.14, 0.14, 1.35)
-          : new THREE.SphereGeometry(weapon.projectileRadius, 8, 8);
+      if (weapon.id === 'quehua_bow') {
+        geo = new THREE.BoxGeometry(0.16, 0.16, 1.85);
+      } else if (weapon.id === 'spring_blaster') {
+        const bolt = new THREE.CylinderGeometry(0.15, 0.22, 1.35, 6);
+        bolt.rotateX(Math.PI / 2);
+        geo = bolt;
+      } else {
+        geo = new THREE.SphereGeometry(weapon.projectileRadius, 10, 10);
+      }
       this.projGeoCache.set(weapon.id, geo);
     }
     let mat = this.projMatCache.get(weapon.id);

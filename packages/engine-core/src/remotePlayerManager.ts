@@ -446,15 +446,15 @@ export class RemotePlayerManager {
   }
 
   /** 联机准星中心射线目标吸附（跳过队友与死亡目标） */
-  findAimTargetPoint(
+  findAimTarget(
     rayOrigin: THREE.Vector3,
     rayDir: THREE.Vector3,
     maxRange: number,
     localTeam: TeamId,
     roomMode: 'coop_roam' | 'ffa' | 'team',
-  ): THREE.Vector3 | null {
+  ): { point: THREE.Vector3; kind: 'enemy'; name: string; distance: number; hpRatio?: number } | null {
     let bestT = maxRange;
-    let bestPoint: THREE.Vector3 | null = null;
+    let best: { point: THREE.Vector3; kind: 'enemy'; name: string; distance: number; hpRatio?: number } | null = null;
     for (const a of this.avatars.values()) {
       if (!a.alive) continue;
       if (roomMode === 'team' && localTeam !== 'none' && a.team === localTeam) continue;
@@ -466,16 +466,33 @@ export class RemotePlayerManager {
       const rz = cz - rayOrigin.z;
       const t = rx * rayDir.x + ry * rayDir.y + rz * rayDir.z;
       if (t <= 2 || t >= bestT) continue;
-      const radius = a.vehicle === 'heli' ? 4.2 : 2.5;
+      const baseRadius = a.vehicle === 'heli' ? 3.8 : 2.1;
+      const radius = Math.min(4.6, baseRadius + t * 0.024);
       const px = rayOrigin.x + rayDir.x * t - cx;
       const py = rayOrigin.y + rayDir.y * t - cy;
       const pz = rayOrigin.z + rayDir.z * t - cz;
       if (px * px + py * py + pz * pz <= radius * radius) {
         bestT = t;
-        bestPoint = new THREE.Vector3(cx, cy, cz);
+        best = {
+          point: new THREE.Vector3(cx, cy, cz),
+          kind: 'enemy',
+          name: a.name,
+          distance: t,
+          hpRatio: a.maxHp > 0 ? a.hp / a.maxHp : undefined,
+        };
       }
     }
-    return bestPoint;
+    return best;
+  }
+
+  findAimTargetPoint(
+    rayOrigin: THREE.Vector3,
+    rayDir: THREE.Vector3,
+    maxRange: number,
+    localTeam: TeamId,
+    roomMode: 'coop_roam' | 'ffa' | 'team',
+  ): THREE.Vector3 | null {
+    return this.findAimTarget(rayOrigin, rayDir, maxRange, localTeam, roomMode)?.point ?? null;
   }
 
   getDriverSeatWorldPos(driverId: string, seatIndex: number): { x: number; y: number; z: number; yaw: number; vehicle: VehicleMode } | null {

@@ -50,19 +50,11 @@ const showCrosshair = computed(
     !store.hud.directorActive,
 );
 
-let desktopFireTimer: number | null = null;
 function startDesktopFire() {
-  props.game?.fireWeapon();
-  if (desktopFireTimer !== null) window.clearInterval(desktopFireTimer);
-  desktopFireTimer = window.setInterval(() => {
-    props.game?.fireWeapon();
-  }, 90);
+  props.game?.setVirtualFire(true);
 }
 function stopDesktopFire() {
-  if (desktopFireTimer !== null) {
-    window.clearInterval(desktopFireTimer);
-    desktopFireTimer = null;
-  }
+  props.game?.setVirtualFire(false);
 }
 
 const isOnlineRoom = computed(() => store.room.status === 'connected');
@@ -285,11 +277,19 @@ function downloadPostcard() {
     <!-- 受击红边闪屏提示 -->
     <div v-if="store.playerHurtFlash" class="hurt-vignette" />
 
-    <!-- 屏幕中央动态准星 + 命中叉 (Hitmarker) + 伤害飘字 -->
+    <!-- 屏幕中央动态准星 + 实时锁敌变红/目标距离 + 命中叉 (Hitmarker) + 伤害飘字 -->
     <div
       v-if="showCrosshair && equippedWeapon"
       class="aim-crosshair"
-      :class="[equippedWeapon.id, { bloom: store.hud.weaponCooldownRatio > 0.15 }]"
+      :class="[
+        equippedWeapon.id,
+        {
+          bloom: store.hud.weaponCooldownRatio > 0.15,
+          locked: !!store.hud.aimTarget,
+          'locked-enemy': store.hud.aimTarget?.kind === 'enemy',
+          'locked-wildlife': store.hud.aimTarget?.kind === 'wildlife',
+        },
+      ]"
     >
       <span class="ch-tick ch-t" />
       <span class="ch-tick ch-b" />
@@ -297,6 +297,14 @@ function downloadPostcard() {
       <span class="ch-tick ch-r" />
       <span class="ch-dot" />
       <span v-if="equippedWeapon.id === 'lotus_mortar'" class="ch-arc" />
+      <span v-if="store.hud.aimTarget" class="ch-lock-ring" />
+
+      <div v-if="store.hud.aimTarget" class="aim-target-tag" :class="store.hud.aimTarget.kind">
+        <span class="aim-target-name">{{ store.hud.aimTarget.name }} · {{ store.hud.aimTarget.distance }}m</span>
+        <div v-if="store.hud.aimTarget.hpRatio !== undefined" class="aim-target-hp">
+          <i :style="{ width: `${Math.round(Math.max(0, Math.min(1, store.hud.aimTarget.hpRatio)) * 100)}%` }" />
+        </div>
+      </div>
 
       <div
         v-if="store.hitFeedback"

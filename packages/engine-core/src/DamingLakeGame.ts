@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {
   SKIN_MAP,
   WEAPON_MAP,
+  type AimTargetInfo,
   type BgmScene,
   type ChatBubbleEvent,
   type EquippedWeaponId,
@@ -108,6 +109,7 @@ export class DamingLakeGame {
   private pointerDownMeta = new Map<number, { x: number; y: number; at: number; pointerType: string; button: number }>();
   private lastPinchDist: number | null = null;
   private mouseAutoFire = false;
+  private virtualFire = false;
   private camShake = 0;
   private netHitSeq = 1;
   private _tmpCamDir = new THREE.Vector3();
@@ -186,7 +188,14 @@ export class DamingLakeGame {
     this.combat = new CombatSystem(this.scene, this.bgm, this.collider);
     if (options.playerName) this.combat.setPlayerName(options.playerName);
     this.combat.onKillFeed = (item) => this.callbacks.onKillFeed?.(item);
-    this.combat.onHitFeedback = (evt) => this.callbacks.onHitFeedback?.(evt);
+    this.combat.onHitFeedback = (evt) => {
+      try {
+        navigator.vibrate?.(evt.eliminated ? [16, 22, 26] : 12);
+      } catch {
+        // ignore
+      }
+      this.callbacks.onHitFeedback?.(evt);
+    };
     this.combat.onPlayerDamaged = (dmg, hp) => this.callbacks.onPlayerDamaged?.(dmg, hp);
     applySkinToPlayer(this.player, SKIN_MAP[this.skinId]);
     this.combat.mountWeaponToPlayer(this.player.root);
@@ -201,6 +210,7 @@ export class DamingLakeGame {
           }
           if (snap.config.mode !== 'coop_roam' && this.combat.weaponId === null) {
             this.combat.setWeapon('spring_blaster');
+            this.syncArmedCameraState();
           }
         }
         this.syncBgmScene();
@@ -402,11 +412,18 @@ export class DamingLakeGame {
 
   rotateCamera(dx: number, dy: number) {
     this.player.camYaw = (this.player.camYaw ?? this.player.yaw) - dx * 0.0055;
-    this.player.camPitch = THREE.MathUtils.clamp((this.player.camPitch ?? 0.28) + dy * 0.004, -0.15, 1.15);
+    this.player.camPitch = THREE.MathUtils.clamp((this.player.camPitch ?? 0.14) + dy * 0.004, -0.55, 1.08);
   }
 
   zoomCamera(delta: number) {
     this.player.camDist = THREE.MathUtils.clamp((this.player.camDist ?? 14) + delta, 6, 62);
+  }
+
+  setVirtualFire(active: boolean) {
+    this.virtualFire = active;
+    if (active && !this.inputBlocked) {
+      this.fireWeapon();
+    }
   }
 
   setVirtualJoystick(moveX: number, moveZ: number) {
@@ -424,6 +441,7 @@ export class DamingLakeGame {
   clearVirtualInputs() {
     this.virtualInput.moveX = 0;
     this.virtualInput.moveZ = 0;
+    this.virtualFire = false;
     for (const k of Object.keys(this.keys)) {
       this.keys[k] = false;
     }
@@ -470,10 +488,68 @@ export class DamingLakeGame {
     this.emitHud();
   }
 
+  private syncArmedCameraState() {
+    const isArmed = this.combat.weaponId !== null;
+    const wasArmed = !!this.player.armed;
+    this.player.armed = isArmed;
+    // 刚拔枪时若镜头俯角过大，自动回正到舒适平视角度，方便直接瞄准远处敌人
+    if (isArmed && !wasArmed && (this.player.camPitch ?? 0) > 0.14) {
+      this.player.camPitch = 0.05;
+    }
+  }
+
   setWeapon(weaponId: EquippedWeaponId) {
     this.combat.setWeapon(weaponId);
+    this.syncArmedCameraState();
     this.bgm.playUiClick();
     this.emitHud();
+  }
+
+  /** 计算屏幕正中央准星射线落点及实时锁定的目标信息（供开火与 HUD 动态准星共用） */
+  private resolveAimRaycast(): { point: THREE.Vector3; target: AimTargetInfo | null } | null {
+    if (this.combat.weaponId === null) return null;
+    const weapon = WEAPON_MAP[this.combat.weaponId];
+    this.camera.getWorldDirection(this._tmpCamDir);
+    const camPos = this.camera.position;
+    let aimDist = weapon.maxRange;
+    const endX = camPos.x + this._tmpCamDir.x * aimDist;
+    const endY = camPos.y + this._tmpCamDir.y * aimDist;
+    const endZ = camPos.z + this._tmpCamDir.z * aimDist;
+
+    const wallHit = this.collider.raycastSolid(camPos.x, camPos.y, camPos.z, endX, endY, endZ, 0.55);
+    if (wallHit && wallHit.dist > 4) {
+      aimDist = Math.min(aimDist, wallHit.dist);
+    }
+    this._tmpAimTarget.copy(camPos).addScaledVector(this._tmpCamDir, aimDist);
+
+    const combatSnap = this.combat.findAimTarget(camPos, this._tmpCamDir, aimDist);
+    const netSnap = this.room.active
+      ? this.remotePlayers.findAimTarget(
+          camPos,
+          this._tmpCamDir,
+          aimDist,
+          this.room.localTeam,
+          this.room.currentRoomMode,
+        )
+      : null;
+
+    let locked = combatSnap;
+    if (netSnap && (!locked || netSnap.distance < locked.distance)) {
+      locked = netSnap;
+    }
+    if (locked) {
+      this._tmpAimTarget.copy(locked.point);
+      return {
+        point: this._tmpAimTarget,
+        target: {
+          kind: locked.kind,
+          name: locked.name,
+          distance: Math.round(this.player.pos.distanceTo(locked.point)),
+          hpRatio: locked.hpRatio,
+        },
+      };
+    }
+    return { point: this._tmpAimTarget, target: null };
   }
 
   fireWeapon() {
@@ -492,39 +568,16 @@ export class DamingLakeGame {
     this.boundUnlockAudio();
 
     const weapon = WEAPON_MAP[this.combat.weaponId];
-    // 1. 从屏幕正中央准星发射相机射线，计算精确瞄准点（支持 AI / 飞鸟锦鲤 / 联机玩家吸附与墙体截断）
-    this.camera.getWorldDirection(this._tmpCamDir);
-    const camPos = this.camera.position;
-    let aimDist = weapon.maxRange;
-    const endX = camPos.x + this._tmpCamDir.x * aimDist;
-    const endY = camPos.y + this._tmpCamDir.y * aimDist;
-    const endZ = camPos.z + this._tmpCamDir.z * aimDist;
+    const aimResult = this.resolveAimRaycast();
+    if (!aimResult) return;
 
-    const wallHit = this.collider.raycastSolid(camPos.x, camPos.y, camPos.z, endX, endY, endZ, 0.55);
-    if (wallHit && wallHit.dist > 4) {
-      aimDist = Math.min(aimDist, wallHit.dist);
-    }
-    this._tmpAimTarget.copy(camPos).addScaledVector(this._tmpCamDir, aimDist);
-
-    // 优先吸附准星正对的活体目标，彻底消除第三人称视差
-    const combatSnap = this.combat.findAimTargetPoint(camPos, this._tmpCamDir, aimDist);
-    const netSnap = this.room.active
-      ? this.remotePlayers.findAimTargetPoint(
-          camPos,
-          this._tmpCamDir,
-          aimDist,
-          this.room.localTeam,
-          this.room.currentRoomMode,
-        )
-      : null;
-    if (combatSnap && (!netSnap || combatSnap.distanceToSquared(camPos) <= netSnap.distanceToSquared(camPos))) {
-      this._tmpAimTarget.copy(combatSnap);
-    } else if (netSnap) {
-      this._tmpAimTarget.copy(netSnap);
-    }
-
-    // 2. 由枪口指向准星落点，得出真实的 3D 射击方向与偏航/俯仰角
+    // 2. 由枪口指向准星落点，并对抛物线重力武器按实际射距精确补偿弹道下坠
     this._tmpMuzzle.set(this.player.pos.x, this.player.pos.y + 1.45, this.player.pos.z);
+    if (weapon.gravity > 0) {
+      const dist = this._tmpMuzzle.distanceTo(this._tmpAimTarget);
+      const flightTime = Math.min(2.2, dist / weapon.projectileSpeed);
+      this._tmpAimTarget.y += 0.5 * weapon.gravity * flightTime * flightTime;
+    }
     this._tmpAimDir.copy(this._tmpAimTarget).sub(this._tmpMuzzle);
     if (this._tmpAimDir.lengthSq() < 1e-4) {
       this._tmpAimDir.copy(this._tmpCamDir);
@@ -544,8 +597,13 @@ export class DamingLakeGame {
     if (fired) {
       this.camShake = Math.max(
         this.camShake,
-        weapon.id === 'lotus_mortar' ? 0.16 : weapon.id === 'quehua_bow' ? 0.1 : 0.05,
+        weapon.id === 'lotus_mortar' ? 0.14 : weapon.id === 'quehua_bow' ? 0.08 : 0.04,
       );
+      try {
+        navigator.vibrate?.(weapon.id === 'lotus_mortar' ? 16 : 8);
+      } catch {
+        // ignore
+      }
       if (this.room.active && this.combat.weaponId) {
         this.room.sendFire(this.player.pos.x, this.player.pos.y, this.player.pos.z, fireYaw, this.combat.weaponId, firePitch);
       }
@@ -617,6 +675,7 @@ export class DamingLakeGame {
     if (mode === 'roam') {
       this.combat.setWeapon(null);
     }
+    this.syncArmedCameraState();
     this.syncBgmScene();
     const modeName =
       mode === 'roam'
@@ -1003,6 +1062,7 @@ export class DamingLakeGame {
     const palette = SEASON_PALETTES[seasonKey];
     const actionInfo = this.resolveActionInfo();
     const mergedTargets = [...this.combat.getMinimapTargets(), ...this.remotePlayers.getMinimapDots()];
+    const aimTarget = !this.director.active ? (this.resolveAimRaycast()?.target ?? null) : null;
 
     this.callbacks.onHudUpdate?.({
       x: Math.round(this.player.pos.x),
@@ -1026,6 +1086,7 @@ export class DamingLakeGame {
       skinId: this.skinId,
       weaponId: this.combat.weaponId,
       weaponCooldownRatio: this.combat.getCooldownRatio(),
+      aimTarget,
       season: seasonKey,
       seasonLabel: palette?.name || '荷风盛夏',
       timeLabel: this.sky.getModeName?.() || '辰巳 · 清晨',
@@ -1066,7 +1127,7 @@ export class DamingLakeGame {
           this.player.root.position.copy(this.player.pos);
           this.player.root.rotation.set(0, this.player.yaw, 0);
         }
-        this.player.updateCamera(this.camera);
+        this.player.updateCamera(this.camera, dt);
         this.world.update(this.player.pos.x, this.player.pos.z, 3);
       } else {
         this.player.update(dt, this.keys, this.elapsed, this.camera, this.sky.nightFactor, {
@@ -1100,7 +1161,7 @@ export class DamingLakeGame {
           }
         }
 
-        this.player.updateCamera(this.camera);
+        this.player.updateCamera(this.camera, dt);
         this.world.update(this.player.pos.x, this.player.pos.z, 3);
       }
       // 轻微开火震屏衰减
@@ -1111,8 +1172,8 @@ export class DamingLakeGame {
       } else {
         this.camShake = 0;
       }
-      // PC 端长按 J 键或右键持枪连发
-      if (!this.inputBlocked && this.combat.weaponId !== null && (this.keys['KeyJ'] || this.mouseAutoFire)) {
+      // PC 端长按 J 键/右键 或 移动端长按开火键：冷却一好即刻连发
+      if (!this.inputBlocked && this.combat.weaponId !== null && (this.keys['KeyJ'] || this.mouseAutoFire || this.virtualFire)) {
         this.fireWeapon();
       }
     }
