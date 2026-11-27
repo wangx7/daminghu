@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import {
   DEFAULT_ROOM_CONFIG,
   type ChatBubbleEvent,
+  type HitFeedbackEvent,
   type HudSnapshot,
   type KillFeedItem,
   type LandmarkSummary,
@@ -76,6 +77,7 @@ export const useGameStore = defineStore('game', () => {
     bgmScene: 'day',
     bgmEnabled: true,
     sfxEnabled: true,
+    quality: 'high',
     visitedIds: [],
     totalLandmarks: 21,
     scoreboard: {
@@ -98,6 +100,8 @@ export const useGameStore = defineStore('game', () => {
   const landmarksOpen = ref(false);
   const notice = ref<{ title: string; body: string } | null>(null);
   const killFeed = ref<KillFeedItem[]>([]);
+  const hitFeedback = ref<HitFeedbackEvent | null>(null);
+  const playerHurtFlash = ref(false);
   const postcard = ref<{ dataUrl: string; filename: string } | null>(null);
 
   // 解锁进度与出题防沉迷设置
@@ -164,6 +168,24 @@ export const useGameStore = defineStore('game', () => {
   }
 
   let noticeTimer: number | null = null;
+  let hitTimer: number | null = null;
+  let hurtTimer: number | null = null;
+
+  function triggerHitFeedback(evt: HitFeedbackEvent) {
+    hitFeedback.value = evt;
+    if (hitTimer) window.clearTimeout(hitTimer);
+    hitTimer = window.setTimeout(() => {
+      hitFeedback.value = null;
+    }, evt.eliminated ? 380 : 240);
+  }
+
+  function triggerPlayerHurt() {
+    playerHurtFlash.value = true;
+    if (hurtTimer) window.clearTimeout(hurtTimer);
+    hurtTimer = window.setTimeout(() => {
+      playerHurtFlash.value = false;
+    }, 320);
+  }
 
   function persistUnlocks() {
     try {
@@ -232,6 +254,8 @@ export const useGameStore = defineStore('game', () => {
     landmarksOpen,
     notice,
     killFeed,
+    hitFeedback,
+    playerHurtFlash,
     postcard,
     unlockedSkins,
     unlockedWeapons,
@@ -248,6 +272,8 @@ export const useGameStore = defineStore('game', () => {
     updateHud,
     showNotice,
     pushKillFeed,
+    triggerHitFeedback,
+    triggerPlayerHurt,
     unlockSkin,
     unlockWeapon,
     unlockAllForDemo,

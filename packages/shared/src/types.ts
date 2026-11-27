@@ -1,5 +1,7 @@
 import type { BgmScene, EquippedWeaponId, GameMode, SeasonKey, SkinId, TeamId, VehicleMode } from './skins';
 
+export type GraphicsQuality = 'low' | 'medium' | 'high';
+
 export interface LandmarkSummary {
   id: string;
   name: string;
@@ -26,6 +28,14 @@ export interface KillFeedItem {
   id: number;
   text: string;
   team: TeamId;
+  timestamp: number;
+}
+
+export interface HitFeedbackEvent {
+  id: number;
+  damage: number;
+  eliminated: boolean;
+  kind: 'bot' | 'player' | 'wildlife' | 'vehicle';
   timestamp: number;
 }
 
@@ -67,6 +77,7 @@ export interface HudSnapshot {
   bgmScene: BgmScene;
   bgmEnabled: boolean;
   sfxEnabled: boolean;
+  quality: GraphicsQuality;
   visitedIds: string[];
   totalLandmarks: number;
   scoreboard: CombatScoreboard;

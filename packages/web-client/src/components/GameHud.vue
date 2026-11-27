@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   QUICK_CHAT_PHRASES,
   SEASON_SKINS,
@@ -9,16 +9,18 @@ import {
   type BgmScene,
   type EquippedWeaponId,
   type GameMode,
+  type GraphicsQuality,
   type QuizCategory,
   type SkinId,
 } from '@daminghu/shared';
 import type { DamingLakeGame } from '@daminghu/engine-core';
 import { useGameStore, type GarageTab } from '../stores/gameStore';
-import Showcase3D from './Showcase3D.vue';
-import QuizModal from './QuizModal.vue';
 import MobileControls from './MobileControls.vue';
-import MultiplayerPanel from './MultiplayerPanel.vue';
-import MatchResultModal from './MatchResultModal.vue';
+
+const Showcase3D = defineAsyncComponent(() => import('./Showcase3D.vue'));
+const QuizModal = defineAsyncComponent(() => import('./QuizModal.vue'));
+const MultiplayerPanel = defineAsyncComponent(() => import('./MultiplayerPanel.vue'));
+const MatchResultModal = defineAsyncComponent(() => import('./MatchResultModal.vue'));
 
 const props = defineProps<{
   game: DamingLakeGame | null;
@@ -37,6 +39,31 @@ const currentSkin = computed(() => SKIN_MAP[store.hud.skinId]);
 const previewSkin = computed(() => SKIN_MAP[previewSkinId.value]);
 const previewWeapon = computed(() => (previewWeaponId.value ? WEAPON_MAP[previewWeaponId.value] : null));
 const equippedWeapon = computed(() => (store.hud.weaponId ? WEAPON_MAP[store.hud.weaponId] : null));
+const showCrosshair = computed(
+  () =>
+    !!equippedWeapon.value &&
+    !store.garageOpen &&
+    !store.landmarksOpen &&
+    !store.activeQuiz &&
+    !store.postcard &&
+    !store.matchResult &&
+    !store.hud.directorActive,
+);
+
+let desktopFireTimer: number | null = null;
+function startDesktopFire() {
+  props.game?.fireWeapon();
+  if (desktopFireTimer !== null) window.clearInterval(desktopFireTimer);
+  desktopFireTimer = window.setInterval(() => {
+    props.game?.fireWeapon();
+  }, 90);
+}
+function stopDesktopFire() {
+  if (desktopFireTimer !== null) {
+    window.clearInterval(desktopFireTimer);
+    desktopFireTimer = null;
+  }
+}
 
 const isOnlineRoom = computed(() => store.room.status === 'connected');
 const isOnlinePlaying = computed(() => isOnlineRoom.value && store.room.phase === 'playing');
@@ -139,11 +166,13 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', syncFullscreenState);
   document.removeEventListener('webkitfullscreenchange', syncFullscreenState);
+  stopDesktopFire();
   if (guardianTimer !== null) window.clearInterval(guardianTimer);
 });
 
+// 监听整个 HUD 快照（已由引擎 15Hz 节流），确保本地玩家静止时远端好友/AI 的小地图点位仍实时刷新
 watch(
-  () => [store.hud.x, store.hud.z, store.hud.yaw, store.hud.targets.length, store.hud.visitedIds.length],
+  () => store.hud,
   () => {
     if (minimapCanvas.value && props.game) {
       props.game.renderMinimap(minimapCanvas.value);
@@ -228,6 +257,10 @@ function selectBgmScene(scene: BgmScene) {
   props.game?.setBgmScene(scene);
 }
 
+function selectQuality(level: GraphicsQuality) {
+  props.game?.setQuality(level);
+}
+
 function onVolumeChange() {
   props.game?.setBgmVolume(bgmVol.value / 100);
 }
@@ -249,12 +282,42 @@ function downloadPostcard() {
 
 <template>
   <div class="hud-layer">
+    <!-- 受击红边闪屏提示 -->
+    <div v-if="store.playerHurtFlash" class="hurt-vignette" />
+
+    <!-- 屏幕中央动态准星 + 命中叉 (Hitmarker) + 伤害飘字 -->
+    <div
+      v-if="showCrosshair && equippedWeapon"
+      class="aim-crosshair"
+      :class="[equippedWeapon.id, { bloom: store.hud.weaponCooldownRatio > 0.15 }]"
+    >
+      <span class="ch-tick ch-t" />
+      <span class="ch-tick ch-b" />
+      <span class="ch-tick ch-l" />
+      <span class="ch-tick ch-r" />
+      <span class="ch-dot" />
+      <span v-if="equippedWeapon.id === 'lotus_mortar'" class="ch-arc" />
+
+      <div
+        v-if="store.hitFeedback"
+        :key="store.hitFeedback.id"
+        class="hit-marker"
+        :class="{ kill: store.hitFeedback.eliminated }"
+      >
+        <i class="hm-a" />
+        <i class="hm-b" />
+        <span class="hit-dmg">
+          {{ store.hitFeedback.kind === 'wildlife' ? '+1' : `-${store.hitFeedback.damage}` }}
+        </span>
+      </div>
+    </div>
+
     <!-- 左上角：极简不挡视野的团团徽章胶囊 -->
     <div class="hud-tl interactive" @click="openGarage('skins')">
-      <div class="avatar-seal">团</div>
+      <div class="avatar-seal">{{ store.playerNickname.slice(0, 1) || '团' }}</div>
       <div class="player-meta">
         <div class="player-name-row">
-          <span>团团</span>
+          <span>{{ store.playerNickname }}</span>
           <span class="skin-pill">{{ currentSkin.name }}</span>
         </div>
         <div class="coord-line">
@@ -301,6 +364,7 @@ function downloadPostcard() {
           <strong>{{ store.hud.scoreboard.blueScore }}</strong>
           <span>历下蓝</span>
         </div>
+        <div class="hp-pill" :class="{ low: store.hud.hp <= 35 }">❤️ {{ store.hud.hp }}</div>
       </div>
 
       <!-- URL 邀请扫码进房横幅 -->
@@ -396,15 +460,38 @@ function downloadPostcard() {
       </button>
     </div>
 
-    <!-- 右下角：桌面端默认空手只留跳跃键，拿起武器后浮现开火与收枪；手机端动作键交由 MobileControls 接管 -->
+    <!-- 右下角：桌面端默认空手只留跳跃键，拿起武器后浮现快捷武器切换栏、冷却开火与收枪；手机端动作键交由 MobileControls 接管 -->
     <div class="hud-br">
       <div v-if="equippedWeapon" class="armed-pill interactive">
-        <span>{{ equippedWeapon.name }}</span>
+        <div class="quick-weapon-slots">
+          <button
+            v-for="w in WEAPON_CATALOG"
+            :key="w.id"
+            class="slot-chip"
+            :class="{ active: store.hud.weaponId === w.id, locked: !store.unlockedWeapons.includes(w.id) }"
+            :title="`${w.name}（快捷键 ${w.slot}）`"
+            @click="handleWeaponAction(w.id)"
+          >
+            <b>{{ w.slot }}</b>
+            <span>{{ w.name.slice(0, 2) }}</span>
+          </button>
+        </div>
         <button class="unequip-btn" @click="handleWeaponAction(null)">收起</button>
       </div>
       <div class="action-cluster desktop-only-actions">
         <button class="circle-btn jump" @click="game?.triggerJump()">跳跃</button>
-        <button v-if="equippedWeapon" class="circle-btn fire" @click="game?.fireWeapon()">开火</button>
+        <button
+          v-if="equippedWeapon"
+          class="circle-btn fire"
+          :class="{ cooling: store.hud.weaponCooldownRatio > 0.02 }"
+          :style="{ '--cd-deg': `${Math.round(store.hud.weaponCooldownRatio * 360)}deg` }"
+          @pointerdown="startDesktopFire"
+          @pointerup="stopDesktopFire"
+          @pointerleave="stopDesktopFire"
+          @pointercancel="stopDesktopFire"
+        >
+          <span>开火</span>
+        </button>
       </div>
     </div>
 
@@ -597,6 +684,19 @@ function downloadPostcard() {
               </button>
             </div>
 
+            <div class="section-label" style="margin-top: 16px">画面品质（低配手机推荐流畅/均衡）</div>
+            <div class="btn-wrap">
+              <button class="guofeng-btn" :class="{ active: store.hud.quality === 'low' }" @click="selectQuality('low')">
+                流畅省电
+              </button>
+              <button class="guofeng-btn" :class="{ active: store.hud.quality === 'medium' }" @click="selectQuality('medium')">
+                均衡推荐
+              </button>
+              <button class="guofeng-btn" :class="{ active: store.hud.quality === 'high' }" @click="selectQuality('high')">
+                极致光影
+              </button>
+            </div>
+
             <div class="section-label" style="margin-top: 16px">丝竹国风背景音乐（梦幻西游同款五声音阶）</div>
             <div class="btn-wrap">
               <button class="guofeng-btn" :class="{ active: store.hud.bgmEnabled }" @click="game?.toggleBgm()">
@@ -696,7 +796,7 @@ function downloadPostcard() {
                 <ul class="guide-list">
                   <li><b>四季皮肤</b>：春/夏/秋/冬 4 套主题装扮（同步跑车涂装），左侧 3D 展台可 360° 试穿。</li>
                   <li><b>3 把免费武器</b>：泉水连发枪（均衡）、荷花水炮（范围溅射）、鹊华长弓（远射高伤）。</li>
-                  <li><b>开火与收枪</b>：默认空手无对战；装备武器后按 <kbd>J</kbd> 或右下角「开火」，按 <kbd>0</kbd> 收枪。</li>
+                  <li><b>开火与切枪</b>：默认空手；装备武器后可用 <b>左键点射 / 长按右键 / 长按 <kbd>J</kbd></b> 朝屏幕准星连发，按 <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> 秒切武器，按 <kbd>0</kbd> 收枪。</li>
                 </ul>
                 <div class="btn-wrap" style="margin-top: 4px">
                   <button class="guofeng-btn" @click="store.garageTab = 'skins'">去试穿皮肤</button>

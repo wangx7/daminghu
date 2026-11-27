@@ -118,6 +118,11 @@ function buildVoxelKoiGeo(mainHex, accentHex, finHex) {
 }
 
 export class LivingWorld {
+  /**
+   * @param {THREE.Scene} scene
+   * @param {THREE.Material} solidMat
+   * @param {any} [collider]
+   */
   constructor(scene, solidMat, collider = null) {
     this.scene = scene;
     this.collider = collider;

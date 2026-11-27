@@ -4,6 +4,7 @@ import {
   type CombatScoreboard,
   type EquippedWeaponId,
   type GameMode,
+  type HitFeedbackEvent,
   type KillFeedItem,
   type MinimapTargetDot,
   type TeamId,
@@ -11,6 +12,7 @@ import {
 } from '@daminghu/shared';
 import type { GuofengBgmEngine } from './bgmEngine';
 import { sampleTerrain } from './legacy/map_data.js';
+import { disposeObject3D } from './threeDispose';
 
 interface Projectile {
   mesh: THREE.Mesh;
@@ -29,11 +31,19 @@ interface SplashRing {
   maxRadius: number;
 }
 
+interface ImpactSpark {
+  mesh: THREE.Mesh;
+  vel: THREE.Vector3;
+  age: number;
+  maxAge: number;
+}
+
 interface PracticeBot {
   id: string;
   name: string;
   team: TeamId;
   root: THREE.Group;
+  bodyMat: THREE.MeshStandardMaterial;
   hpBarFill: THREE.Mesh;
   pos: THREE.Vector3;
   homePos: THREE.Vector3;
@@ -44,6 +54,7 @@ interface PracticeBot {
   respawnTimer: number;
   fireCooldown: number;
   patrolPhase: number;
+  hitFlashTimer: number;
 }
 
 interface WildlifeTarget {
@@ -105,7 +116,7 @@ export function buildWeaponMesh(weapon: WeaponConfig): THREE.Group {
   return g;
 }
 
-function buildBotMesh(team: TeamId): { root: THREE.Group; hpBarFill: THREE.Mesh } {
+function buildBotMesh(team: TeamId): { root: THREE.Group; bodyMat: THREE.MeshStandardMaterial; hpBarFill: THREE.Mesh } {
   const root = new THREE.Group();
   const primary = team === 'red' ? 0xe63946 : team === 'blue' ? 0x2563eb : 0xf59e0b;
   const bodyMat = new THREE.MeshStandardMaterial({ color: primary, roughness: 0.65 });
@@ -133,7 +144,7 @@ function buildBotMesh(team: TeamId): { root: THREE.Group; hpBarFill: THREE.Mesh 
   hpBarFill.position.set(0, 2.95, 0.02);
 
   root.add(body, head, eyeL, eyeR, barBg, hpBarFill);
-  return { root, hpBarFill };
+  return { root, bodyMat, hpBarFill };
 }
 
 function buildBirdTargetMesh(colorHex: number): { root: THREE.Group; wingL: THREE.Mesh; wingR: THREE.Mesh } {
@@ -172,10 +183,16 @@ export class CombatSystem {
   private bgm: GuofengBgmEngine;
   private projectiles: Projectile[] = [];
   private splashes: SplashRing[] = [];
+  private sparks: ImpactSpark[] = [];
   private bots: PracticeBot[] = [];
   private wildlife: WildlifeTarget[] = [];
   private playerWeaponMesh: THREE.Group | null = null;
+  private muzzleFlashMesh: THREE.Mesh | null = null;
   private mountedRoot: THREE.Group | null = null;
+  private recoilOffset = 0;
+  private muzzleFlashTimer = 0;
+  private sparkGeo = new THREE.BoxGeometry(0.24, 0.24, 0.24);
+  private sparkMatCache = new Map<number, THREE.MeshBasicMaterial>();
 
   /** 默认空手（无武器、无对战状态） */
   public weaponId: EquippedWeaponId = null;
@@ -198,14 +215,28 @@ export class CombatSystem {
   };
 
   private feedSeq = 1;
+  private hitSeq = 1;
   private collider: any;
+  private playerName = '团团';
+  private projGeoCache = new Map<string, THREE.BufferGeometry>();
+  private projMatCache = new Map<string, THREE.MeshBasicMaterial>();
+  private _tmpLook = new THREE.Vector3();
+  private _tmpBotCenter = new THREE.Vector3();
+  private _tmpPush = new THREE.Vector3();
   public onKillFeed?: (item: KillFeedItem) => void;
+  public onHitFeedback?: (event: HitFeedbackEvent) => void;
+  public onPlayerDamaged?: (damage: number, remainingHp: number) => void;
 
   constructor(scene: THREE.Scene, bgm: GuofengBgmEngine, collider?: any) {
     this.scene = scene;
     this.bgm = bgm;
     this.collider = collider ?? null;
     this.spawnWildlife(-210, 210);
+  }
+
+  setPlayerName(name: string) {
+    const clean = name.trim();
+    if (clean) this.playerName = clean;
   }
 
   mountWeaponToPlayer(playerRoot: THREE.Group) {
@@ -215,13 +246,28 @@ export class CombatSystem {
 
   setWeapon(id: EquippedWeaponId) {
     this.weaponId = id;
+    this.recoilOffset = 0;
+    this.muzzleFlashTimer = 0;
     if (this.mountedRoot) {
       if (this.playerWeaponMesh) {
         this.mountedRoot.remove(this.playerWeaponMesh);
+        disposeObject3D(this.playerWeaponMesh);
         this.playerWeaponMesh = null;
+        this.muzzleFlashMesh = null;
       }
       if (id !== null) {
-        this.playerWeaponMesh = buildWeaponMesh(WEAPON_MAP[id]);
+        const w = WEAPON_MAP[id];
+        this.playerWeaponMesh = buildWeaponMesh(w);
+        const flashMat = new THREE.MeshBasicMaterial({
+          color: w.accentColor,
+          transparent: true,
+          opacity: 0.92,
+        });
+        const flash = new THREE.Mesh(new THREE.SphereGeometry(0.28, 6, 6), flashMat);
+        flash.position.set(0, 0.05, 0.86);
+        flash.visible = false;
+        this.playerWeaponMesh.add(flash);
+        this.muzzleFlashMesh = flash;
         this.mountedRoot.add(this.playerWeaponMesh);
       }
     }
@@ -278,7 +324,10 @@ export class CombatSystem {
   }
 
   private clearWildlife() {
-    for (const w of this.wildlife) this.scene.remove(w.root);
+    for (const w of this.wildlife) {
+      this.scene.remove(w.root);
+      disposeObject3D(w.root);
+    }
     this.wildlife = [];
   }
 
@@ -358,7 +407,7 @@ export class CombatSystem {
 
   private spawnBot(id: string, name: string, team: TeamId, x: number, z: number, phase: number) {
     const spot = this.findSafeBotSpot(x, z);
-    const { root, hpBarFill } = buildBotMesh(team);
+    const { root, bodyMat, hpBarFill } = buildBotMesh(team);
     root.position.set(spot.x, spot.y, spot.z);
     this.scene.add(root);
     this.bots.push({
@@ -366,6 +415,7 @@ export class CombatSystem {
       name,
       team,
       root,
+      bodyMat,
       hpBarFill,
       pos: new THREE.Vector3(spot.x, spot.y, spot.z),
       homePos: new THREE.Vector3(spot.x, spot.y, spot.z),
@@ -374,8 +424,9 @@ export class CombatSystem {
       maxHp: 100,
       alive: true,
       respawnTimer: 0,
-      fireCooldown: 1.4 + Math.random() * 1.4,
+      fireCooldown: 1.8 + Math.random() * 1.4,
       patrolPhase: phase,
+      hitFlashTimer: 0,
     });
   }
 
@@ -403,20 +454,63 @@ export class CombatSystem {
   private clearBots() {
     for (const b of this.bots) {
       this.scene.remove(b.root);
+      disposeObject3D(b.root);
     }
     this.bots = [];
   }
 
-  firePlayer(playerPos: THREE.Vector3, yaw: number, pitch = 0.06): boolean {
+  /** 准星中心射线目标距离吸附：优先锁定准星正对的 AI 靶子或飞鸟锦鲤，消除第三人称视差 */
+  findAimTargetPoint(rayOrigin: THREE.Vector3, rayDir: THREE.Vector3, maxRange: number): THREE.Vector3 | null {
+    let bestT = maxRange;
+    let bestPoint: THREE.Vector3 | null = null;
+
+    const testCandidate = (cx: number, cy: number, cz: number, radius: number) => {
+      const rx = cx - rayOrigin.x;
+      const ry = cy - rayOrigin.y;
+      const rz = cz - rayOrigin.z;
+      const t = rx * rayDir.x + ry * rayDir.y + rz * rayDir.z;
+      if (t <= 2 || t >= bestT) return;
+      const px = rayOrigin.x + rayDir.x * t - cx;
+      const py = rayOrigin.y + rayDir.y * t - cy;
+      const pz = rayOrigin.z + rayDir.z * t - cz;
+      if (px * px + py * py + pz * pz <= radius * radius) {
+        bestT = t;
+        bestPoint = new THREE.Vector3(cx, cy, cz);
+      }
+    };
+
+    for (const bot of this.bots) {
+      if (!bot.alive) continue;
+      if (this.playerTeam !== 'none' && bot.team === this.playerTeam) continue;
+      testCandidate(bot.pos.x, bot.pos.y + 1.35, bot.pos.z, 2.35);
+    }
+    for (const w of this.wildlife) {
+      if (!w.alive) continue;
+      testCandidate(w.root.position.x, w.root.position.y, w.root.position.z, w.kind === 'bird' ? 3.2 : 3.0);
+    }
+    return bestPoint;
+  }
+
+  firePlayer(playerPos: THREE.Vector3, yaw: number, pitch = 0.06, aimDirOverride?: THREE.Vector3): boolean {
     if (this.weaponId === null || this.cooldown > 0) return false;
     const weapon = WEAPON_MAP[this.weaponId];
     this.cooldown = weapon.cooldownSec;
 
-    const dir = new THREE.Vector3(
-      Math.sin(yaw) * Math.cos(pitch),
-      Math.sin(pitch) + (weapon.gravity > 0 ? 0.24 : 0.04),
-      Math.cos(yaw) * Math.cos(pitch),
-    ).normalize();
+    let dir: THREE.Vector3;
+    if (aimDirOverride) {
+      dir = aimDirOverride.clone().normalize();
+      if (weapon.gravity > 0) {
+        // 抛物线武器按重力适度抬高仰角，保证准星指哪大致落哪
+        dir.y += weapon.id === 'lotus_mortar' ? 0.16 : 0.025;
+        dir.normalize();
+      }
+    } else {
+      dir = new THREE.Vector3(
+        Math.sin(yaw) * Math.cos(pitch),
+        Math.sin(pitch) + (weapon.gravity > 0 ? 0.22 : 0),
+        Math.cos(yaw) * Math.cos(pitch),
+      ).normalize();
+    }
 
     const origin = new THREE.Vector3(
       playerPos.x + Math.sin(yaw) * 1.4,
@@ -425,7 +519,32 @@ export class CombatSystem {
     );
     this.spawnProjectile(origin, dir, weapon, this.playerTeam, true);
     this.bgm.playWeaponFire(weapon.id);
+
+    // 触发枪身后坐力回弹与枪口闪光
+    this.recoilOffset = weapon.id === 'lotus_mortar' ? 0.42 : weapon.id === 'quehua_bow' ? 0.3 : 0.2;
+    this.muzzleFlashTimer = 0.075;
+    if (this.muzzleFlashMesh) {
+      this.muzzleFlashMesh.visible = true;
+      this.muzzleFlashMesh.scale.setScalar(weapon.id === 'lotus_mortar' ? 1.45 : 1.0);
+    }
     return true;
+  }
+
+  private getSharedProjectileAssets(weapon: WeaponConfig): { geo: THREE.BufferGeometry; mat: THREE.MeshBasicMaterial } {
+    let geo = this.projGeoCache.get(weapon.id);
+    if (!geo) {
+      geo =
+        weapon.id === 'quehua_bow'
+          ? new THREE.BoxGeometry(0.14, 0.14, 1.35)
+          : new THREE.SphereGeometry(weapon.projectileRadius, 8, 8);
+      this.projGeoCache.set(weapon.id, geo);
+    }
+    let mat = this.projMatCache.get(weapon.id);
+    if (!mat) {
+      mat = new THREE.MeshBasicMaterial({ color: weapon.color });
+      this.projMatCache.set(weapon.id, mat);
+    }
+    return { geo, mat };
   }
 
   private spawnProjectile(
@@ -435,14 +554,11 @@ export class CombatSystem {
     ownerTeam: TeamId,
     fromPlayer: boolean,
   ) {
-    const geo =
-      weapon.id === 'quehua_bow'
-        ? new THREE.BoxGeometry(0.14, 0.14, 1.35)
-        : new THREE.SphereGeometry(weapon.projectileRadius, 8, 8);
-    const mat = new THREE.MeshBasicMaterial({ color: weapon.color });
+    const { geo, mat } = this.getSharedProjectileAssets(weapon);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.copy(origin);
-    mesh.lookAt(origin.clone().add(dir));
+    this._tmpLook.copy(origin).add(dir);
+    mesh.lookAt(this._tmpLook);
     this.scene.add(mesh);
 
     this.projectiles.push({
@@ -469,6 +585,35 @@ export class CombatSystem {
     mesh.position.set(pos.x, pos.y + 0.25, pos.z);
     this.scene.add(mesh);
     this.splashes.push({ mesh, age: 0, maxAge: 0.42, maxRadius: Math.max(1.6, radius) });
+    this.spawnImpactSparks(pos, color, radius >= 5 ? 9 : 5);
+  }
+
+  private spawnImpactSparks(pos: THREE.Vector3, color: number, count = 5) {
+    let mat = this.sparkMatCache.get(color);
+    if (!mat) {
+      mat = new THREE.MeshBasicMaterial({ color });
+      this.sparkMatCache.set(color, mat);
+    }
+    for (let i = 0; i < count; i++) {
+      if (this.sparks.length >= 64) break;
+      const mesh = new THREE.Mesh(this.sparkGeo, mat);
+      mesh.position.set(pos.x, pos.y + 0.3, pos.z);
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 4 + Math.random() * 7;
+      const vel = new THREE.Vector3(Math.cos(ang) * spd, 4.5 + Math.random() * 5.5, Math.sin(ang) * spd);
+      this.scene.add(mesh);
+      this.sparks.push({ mesh, vel, age: 0, maxAge: 0.34 + Math.random() * 0.16 });
+    }
+  }
+
+  private emitHit(damage: number, eliminated: boolean, kind: HitFeedbackEvent['kind']) {
+    this.onHitFeedback?.({
+      id: this.hitSeq++,
+      damage,
+      eliminated,
+      kind,
+      timestamp: Date.now(),
+    });
   }
 
   private emitFeed(text: string, team: TeamId) {
@@ -497,6 +642,25 @@ export class CombatSystem {
 
   update(dt: number, elapsed: number, playerPos: THREE.Vector3, camera: THREE.Camera) {
     if (this.cooldown > 0) this.cooldown = Math.max(0, this.cooldown - dt);
+
+    // 枪身后坐力弹性复位 + 枪口闪光衰减
+    if (this.playerWeaponMesh) {
+      if (this.recoilOffset > 0.001) {
+        this.recoilOffset = Math.max(0, this.recoilOffset - dt * 2.6);
+      } else {
+        this.recoilOffset = 0;
+      }
+      this.playerWeaponMesh.position.z = 0.45 - this.recoilOffset;
+      this.playerWeaponMesh.rotation.x = -this.recoilOffset * 0.65;
+    }
+    if (this.muzzleFlashMesh && this.muzzleFlashTimer > 0) {
+      this.muzzleFlashTimer -= dt;
+      if (this.muzzleFlashTimer <= 0) {
+        this.muzzleFlashMesh.visible = false;
+      } else {
+        this.muzzleFlashMesh.scale.multiplyScalar(0.88);
+      }
+    }
 
     if ((this.mode === 'practice_solo' || this.mode === 'practice_team') && this.scoreboard.timeRemainingSec > 0) {
       this.scoreboard.timeRemainingSec = Math.max(0, this.scoreboard.timeRemainingSec - dt);
@@ -578,24 +742,54 @@ export class CombatSystem {
       bot.root.rotation.y = bot.yaw;
       bot.hpBarFill.lookAt(camera.position);
 
-      if (this.mode === 'practice_team') {
+      // 受击闪白衰减
+      if (bot.hitFlashTimer > 0) {
+        bot.hitFlashTimer = Math.max(0, bot.hitFlashTimer - dt);
+        bot.bodyMat.emissiveIntensity = bot.hitFlashTimer > 0 ? (bot.hitFlashTimer / 0.14) * 0.8 : 0;
+      }
+
+      if (this.mode === 'practice_team' || this.mode === 'practice_solo') {
         bot.fireCooldown -= dt;
         if (bot.fireCooldown <= 0) {
-          bot.fireCooldown = 1.6 + Math.random() * 1.4;
-          const enemy = this.bots.find((other) => other.alive && other.team !== bot.team);
-          if (enemy && enemy.pos.distanceTo(bot.pos) < 85) {
+          bot.fireCooldown = this.mode === 'practice_solo' ? 2.4 + Math.random() * 1.5 : 1.7 + Math.random() * 1.3;
+          // 寻找最近敌对目标（包含玩家，让单人练习也有真实对枪紧张感！）
+          let targetPos: THREE.Vector3 | null = null;
+          let bestDist = 78;
+
+          if (this.playerTeam === 'none' || bot.team !== this.playerTeam) {
+            const dPlayer = bot.pos.distanceTo(playerPos);
+            if (dPlayer < bestDist) {
+              bestDist = dPlayer;
+              targetPos = playerPos;
+            }
+          }
+          if (this.mode === 'practice_team') {
+            for (const other of this.bots) {
+              if (!other.alive || other.team === bot.team) continue;
+              const d = bot.pos.distanceTo(other.pos);
+              if (d < bestDist) {
+                bestDist = d;
+                targetPos = other.pos;
+              }
+            }
+          }
+
+          if (targetPos) {
             const wallBlocked = this.collider?.raycastSolid(
               bot.pos.x,
               bot.pos.y + 1.5,
               bot.pos.z,
-              enemy.pos.x,
-              enemy.pos.y + 1.3,
-              enemy.pos.z,
+              targetPos.x,
+              targetPos.y + 1.3,
+              targetPos.z,
               0.7,
             );
             if (!wallBlocked) {
-              const aim = enemy.pos.clone().sub(bot.pos);
-              aim.y += 1.0;
+              const aim = targetPos.clone().sub(bot.pos);
+              aim.y += 1.05;
+              const spread = this.mode === 'practice_solo' ? 0.18 : 0.12;
+              aim.x += (Math.random() - 0.5) * bestDist * spread;
+              aim.z += (Math.random() - 0.5) * bestDist * spread;
               this.spawnProjectile(
                 bot.pos.clone().add(new THREE.Vector3(0, 1.5, 0)),
                 aim.normalize(),
@@ -619,7 +813,8 @@ export class CombatSystem {
       const prevZ = p.mesh.position.z;
       p.vel.y -= p.weapon.gravity * dt;
       p.mesh.position.addScaledVector(p.vel, dt);
-      p.mesh.lookAt(p.mesh.position.clone().add(p.vel));
+      this._tmpLook.copy(p.mesh.position).add(p.vel);
+      p.mesh.lookAt(this._tmpLook);
 
       const groundY = Math.max(0.4, this.getTerrainHeight(p.mesh.position.x, p.mesh.position.z));
       let hit = false;
@@ -654,14 +849,33 @@ export class CombatSystem {
         }
       }
 
+      // 命中玩家检测（AI 还击）
+      if (!hit && !p.fromPlayer && (p.ownerTeam === 'none' || p.ownerTeam !== this.playerTeam)) {
+        this._tmpBotCenter.set(playerPos.x, playerPos.y + 1.15, playerPos.z);
+        if (p.mesh.position.distanceTo(this._tmpBotCenter) < 1.35 + p.weapon.projectileRadius) {
+          const dmg = this.mode === 'practice_solo' ? 10 : 12;
+          this.playerHp = Math.max(0, this.playerHp - dmg);
+          this.bgm.playPlayerHurt();
+          this.onPlayerDamaged?.(dmg, this.playerHp);
+          if (this.playerHp <= 0) {
+            this.playerHp = this.playerMaxHp;
+            if (p.ownerTeam === 'blue') this.scoreboard.blueScore++;
+            else if (p.ownerTeam === 'red') this.scoreboard.redScore++;
+            this.emitFeed(`${this.playerName} 被游侠水弹击中，已迅速重整状态！`, p.ownerTeam);
+          }
+          hit = true;
+        }
+      }
+
       // 命中 Bot 检测
       if (!hit) {
         for (const bot of this.bots) {
           if (!bot.alive) continue;
           if (p.ownerTeam !== 'none' && bot.team === p.ownerTeam) continue;
-          const dist = p.mesh.position.distanceTo(new THREE.Vector3(bot.pos.x, bot.pos.y + 1.3, bot.pos.z));
+          this._tmpBotCenter.set(bot.pos.x, bot.pos.y + 1.3, bot.pos.z);
+          const dist = p.mesh.position.distanceTo(this._tmpBotCenter);
           if (dist < 1.85 + p.weapon.projectileRadius) {
-            this.applyDamageToBot(bot, p.weapon.damage, p.fromPlayer, p.ownerTeam, p.vel);
+            this.applyDamageToBot(bot, p.weapon.damage, p.fromPlayer, p.ownerTeam, p.vel, p.weapon.knockback);
             hit = true;
             break;
           }
@@ -690,20 +904,27 @@ export class CombatSystem {
             const d = p.mesh.position.distanceTo(bot.pos);
             if (d <= p.weapon.splashRadius) {
               const falloff = 1 - (d / p.weapon.splashRadius) * 0.55;
-              this.applyDamageToBot(bot, Math.round(p.weapon.damage * falloff), p.fromPlayer, p.ownerTeam, p.vel);
+              const splashDir = bot.pos.clone().sub(p.mesh.position);
+              if (splashDir.lengthSq() < 0.01) splashDir.copy(p.vel);
+              this.applyDamageToBot(
+                bot,
+                Math.round(p.weapon.damage * falloff),
+                p.fromPlayer,
+                p.ownerTeam,
+                splashDir,
+                p.weapon.knockback * falloff,
+              );
             }
           }
         } else {
           this.spawnSplash(p.mesh.position, p.weapon.color, 1.8);
         }
         this.scene.remove(p.mesh);
-        p.mesh.geometry.dispose();
-        (p.mesh.material as THREE.Material).dispose();
         this.projectiles.splice(i, 1);
       }
     }
 
-    // 3. 更新水花扩散环
+    // 3. 更新水花扩散环与受击飞溅粒子
     for (let i = this.splashes.length - 1; i >= 0; i--) {
       const s = this.splashes[i];
       s.age += dt;
@@ -720,10 +941,24 @@ export class CombatSystem {
       }
     }
 
+    for (let i = this.sparks.length - 1; i >= 0; i--) {
+      const sp = this.sparks[i];
+      sp.age += dt;
+      if (sp.age >= sp.maxAge) {
+        this.scene.remove(sp.mesh);
+        this.sparks.splice(i, 1);
+      } else {
+        sp.vel.y -= 18 * dt;
+        sp.mesh.position.addScaledVector(sp.vel, dt);
+        sp.mesh.rotation.x += dt * 7;
+        sp.mesh.rotation.y += dt * 9;
+        sp.mesh.scale.setScalar(Math.max(0.05, 1 - sp.age / sp.maxAge));
+      }
+    }
+
     if (this.playerHp < this.playerMaxHp) {
       this.playerHp = Math.min(this.playerMaxHp, this.playerHp + dt * 4);
     }
-    void playerPos;
   }
 
   private catchWildlife(w: WildlifeTarget, weapon: WeaponConfig) {
@@ -733,27 +968,50 @@ export class CombatSystem {
     w.root.visible = false;
     this.spawnSplash(w.root.position, w.kind === 'bird' ? 0xfde047 : 0x38bdf8, 3.2);
     this.bgm.playHit(true);
+    this.emitHit(1, true, 'wildlife');
     if (w.kind === 'bird') {
       this.scoreboard.birdsCaught++;
-      this.emitFeed(`团团 用 ${weapon.name} 惊起一只「${w.name}」+1`, 'none');
+      this.emitFeed(`${this.playerName} 用 ${weapon.name} 惊起一只「${w.name}」+1`, 'none');
     } else {
       this.scoreboard.fishCaught++;
-      this.emitFeed(`团团 用 ${weapon.name} 捕获一条「${w.name}」+1`, 'none');
+      this.emitFeed(`${this.playerName} 用 ${weapon.name} 捕获一条「${w.name}」+1`, 'none');
     }
   }
 
-  private applyDamageToBot(bot: PracticeBot, dmg: number, fromPlayer: boolean, ownerTeam: TeamId, vel: THREE.Vector3) {
+  private applyDamageToBot(
+    bot: PracticeBot,
+    dmg: number,
+    fromPlayer: boolean,
+    ownerTeam: TeamId,
+    vel: THREE.Vector3,
+    knockback = 3,
+  ) {
     if (!bot.alive) return;
     bot.hp = Math.max(0, bot.hp - dmg);
     bot.hpBarFill.scale.x = Math.max(0.01, bot.hp / bot.maxHp);
 
-    const push = new THREE.Vector3(vel.x, 0, vel.z).normalize().multiplyScalar(1.0);
-    const nx = bot.pos.x + push.x;
-    const nz = bot.pos.z + push.z;
-    const terr = sampleTerrain(nx, nz);
-    if (!terr?.isWater && (!this.collider || !this.collider.collidesBox(nx, bot.pos.y + 0.05, nz, 0.52, 1.75))) {
-      bot.pos.x = nx;
-      bot.pos.z = nz;
+    // 受击闪白
+    bot.hitFlashTimer = 0.14;
+    bot.bodyMat.emissive.setHex(0xffffff);
+    bot.bodyMat.emissiveIntensity = 0.8;
+
+    // 真实按武器 knockback 分步击退（避免穿墙或落水）
+    this._tmpPush.set(vel.x, 0, vel.z);
+    if (this._tmpPush.lengthSq() > 1e-6) {
+      const pushDist = Math.min(4.2, Math.max(0.6, knockback * 0.28));
+      const steps = Math.max(1, Math.ceil(pushDist / 0.7));
+      this._tmpPush.normalize().multiplyScalar(pushDist / steps);
+      for (let s = 0; s < steps; s++) {
+        const nx = bot.pos.x + this._tmpPush.x;
+        const nz = bot.pos.z + this._tmpPush.z;
+        const terr = sampleTerrain(nx, nz);
+        if (!terr?.isWater && (!this.collider || !this.collider.collidesBox(nx, bot.pos.y + 0.05, nz, 0.52, 1.75))) {
+          bot.pos.x = nx;
+          bot.pos.z = nz;
+        } else {
+          break;
+        }
+      }
     }
 
     if (fromPlayer) {
@@ -767,12 +1025,46 @@ export class CombatSystem {
       if (fromPlayer) {
         this.scoreboard.playerKills++;
         this.bgm.playHit(true);
-        this.emitFeed(`团团 击败了 ${bot.name}`, ownerTeam);
+        this.emitHit(dmg, true, 'bot');
+        this.emitFeed(`${this.playerName} 击败了 ${bot.name}`, ownerTeam);
       }
       if (ownerTeam === 'red') this.scoreboard.redScore++;
       if (ownerTeam === 'blue') this.scoreboard.blueScore++;
     } else if (fromPlayer) {
       this.bgm.playHit(false);
+      this.emitHit(dmg, false, 'bot');
     }
+  }
+
+  dispose() {
+    this.clearBots();
+    this.clearWildlife();
+    if (this.playerWeaponMesh && this.mountedRoot) {
+      this.mountedRoot.remove(this.playerWeaponMesh);
+      disposeObject3D(this.playerWeaponMesh);
+      this.playerWeaponMesh = null;
+      this.muzzleFlashMesh = null;
+    }
+    for (const p of this.projectiles) {
+      this.scene.remove(p.mesh);
+    }
+    this.projectiles = [];
+    for (const s of this.splashes) {
+      this.scene.remove(s.mesh);
+      s.mesh.geometry.dispose();
+      (s.mesh.material as THREE.Material).dispose();
+    }
+    this.splashes = [];
+    for (const sp of this.sparks) {
+      this.scene.remove(sp.mesh);
+    }
+    this.sparks = [];
+    this.sparkGeo.dispose();
+    for (const mat of this.sparkMatCache.values()) mat.dispose();
+    this.sparkMatCache.clear();
+    for (const geo of this.projGeoCache.values()) geo.dispose();
+    this.projGeoCache.clear();
+    for (const mat of this.projMatCache.values()) mat.dispose();
+    this.projMatCache.clear();
   }
 }

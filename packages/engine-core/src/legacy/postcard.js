@@ -11,14 +11,14 @@ function findNearestLandmark(x, z) {
   return { lm: best, dist: bestD };
 }
 
-export function capturePostcard({ renderer, renderScene, player, sky, sound }) {
-  // 立即渲染最新一帧，确保 WebGL 画布非黑屏
+export function capturePostcard({ renderer, renderScene, player, sky, sound, createCanvas }) {
+  // 立即渲染最新一帧，确保 WebGL 画布非黑屏（无需常驻开启 preserveDrawingBuffer）
   renderScene();
   sound?.playShutter();
 
   const src = renderer.domElement;
   const W = 1280, H = 860;
-  const cvs = document.createElement('canvas');
+  const cvs = createCanvas ? createCanvas(W, H) : document.createElement('canvas');
   cvs.width = W;
   cvs.height = H;
   const ctx = cvs.getContext('2d');
@@ -117,32 +117,5 @@ export function capturePostcard({ renderer, renderScene, player, sky, sound }) {
   ctx.fillText('明游', sealX + sealS * 0.5, sealY + 28);
   ctx.fillText('湖历', sealX + sealS * 0.5, sealY + 53);
 
-  const dataUrl = cvs.toDataURL('image/png');
-  showPostcardModal(dataUrl, `大明湖明信片_${lm.name}_${dateStr}.png`);
-  return dataUrl;
-}
-
-function showPostcardModal(dataUrl, filename) {
-  const modal = document.getElementById('postcard-modal');
-  const img = document.getElementById('postcard-img');
-  const dlBtn = document.getElementById('btn-postcard-download');
-  const closeBtn = document.getElementById('btn-postcard-close');
-  if (!modal || !img) return;
-
-  img.src = dataUrl;
-  modal.classList.add('show');
-
-  if (dlBtn) {
-    dlBtn.onclick = () => {
-      const a = document.createElement('a');
-      a.href = dataUrl;
-      a.download = filename;
-      a.click();
-    };
-  }
-  const close = () => modal.classList.remove('show');
-  if (closeBtn) closeBtn.onclick = close;
-  modal.onclick = (e) => {
-    if (e.target === modal) close();
-  };
+  return cvs.toDataURL('image/png');
 }

@@ -198,10 +198,19 @@ export class SkyAndLighting {
     scene.add(this.sun);
     scene.add(this.sun.target);
 
+    this.renderer = renderer;
+    this.camera = camera;
+    this.bloomEnabled = true;
+
+    const initSize = new THREE.Vector2();
+    renderer.getSize(initSize);
+    const initW = Math.max(1, Math.floor((initSize.x || 1280) / 2));
+    const initH = Math.max(1, Math.floor((initSize.y || 720) / 2));
+
     this.composer = new EffectComposer(renderer);
     this.composer.addPass(new RenderPass(scene, camera));
     this.bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(Math.max(1, Math.floor(window.innerWidth / 2)), Math.max(1, Math.floor(window.innerHeight / 2))),
+      new THREE.Vector2(initW, initH),
       0.2, 0.55, 0.82,
     );
     this.composer.addPass(this.bloomPass);
@@ -281,7 +290,34 @@ export class SkyAndLighting {
     this.waterUniforms.uChaoranGlow.value = this.chaoranGlowVal;
   }
 
+  setQuality(level) {
+    const shadowSize = level === 'low' ? 512 : level === 'medium' ? 1024 : 2048;
+    const enableBloom = level !== 'low';
+    this.bloomEnabled = enableBloom;
+    this.bloomPass.enabled = enableBloom;
+    if (this.sun.shadow.mapSize.x !== shadowSize) {
+      this.sun.shadow.mapSize.set(shadowSize, shadowSize);
+      if (this.sun.shadow.map) {
+        this.sun.shadow.map.dispose();
+        this.sun.shadow.map = null;
+      }
+      this.sun.shadow.needsUpdate = true;
+    }
+  }
+
   render() {
-    this.composer.render();
+    if (this.bloomEnabled) {
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
+  }
+
+  dispose() {
+    this.bloomPass?.dispose?.();
+    this.composer?.dispose?.();
+    this.skyDome?.geometry?.dispose?.();
+    this.skyDome?.material?.dispose?.();
+    this.sun?.shadow?.map?.dispose?.();
   }
 }

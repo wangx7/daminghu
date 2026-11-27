@@ -108,6 +108,20 @@ export const DEFAULT_ROOM_CONFIG: RoomConfig = {
   matchDurationSec: 180,
 };
 
+export interface P2PNetworkOptions {
+  peerServer?: {
+    host: string;
+    port?: number;
+    path?: string;
+    secure?: boolean;
+  };
+  iceServers?: Array<{
+    urls: string | string[];
+    username?: string;
+    credential?: string;
+  }>;
+}
+
 // ===== P2P 星型协议消息定义 =====
 export type ClientToHostMsg =
   | {
@@ -132,6 +146,7 @@ export type ClientToHostMsg =
       y: number;
       z: number;
       yaw: number;
+      pitch?: number;
       weaponId: WeaponId;
     }
   | {
@@ -183,6 +198,7 @@ export type HostToClientMsg =
       y: number;
       z: number;
       yaw: number;
+      pitch?: number;
       weaponId: WeaponId;
     }
   | {
@@ -220,4 +236,16 @@ export type HostToClientMsg =
       driverVehicle: VehicleMode | null;
       autoParachute: boolean;
       ejectReason?: string;
+    }
+  | {
+      type: 'force_exit_vehicle';
+      targetId: string;
+      autoParachute: boolean;
+      reason: string;
+    }
+  | {
+      type: 'hit_confirm';
+      damage: number;
+      eliminated: boolean;
+      kind: 'player' | 'vehicle';
     };

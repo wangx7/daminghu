@@ -139,7 +139,7 @@ function onFireDown(e: PointerEvent) {
   if (fireInterval !== null) window.clearInterval(fireInterval);
   fireInterval = window.setInterval(() => {
     if (held.Fire) props.game?.fireWeapon();
-  }, 180);
+  }, 90);
 }
 
 function onFireUp(e?: PointerEvent) {
@@ -284,7 +284,8 @@ onBeforeUnmount(() => {
           <button
             v-if="hasWeapon"
             class="m-circle-btn m-fire-btn"
-            :class="{ active: held.Fire }"
+            :class="{ active: held.Fire, cooling: store.hud.weaponCooldownRatio > 0.02 }"
+            :style="{ '--cd-deg': `${Math.round(store.hud.weaponCooldownRatio * 360)}deg` }"
             @pointerdown="onFireDown"
             @pointerup="onFireUp"
             @pointercancel="onFireUp"

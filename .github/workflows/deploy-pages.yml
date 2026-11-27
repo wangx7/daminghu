@@ -35,8 +35,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck & Build
-        run: pnpm typecheck && pnpm build
+      - name: Typecheck, Test & Build
+        run: pnpm typecheck && pnpm test && pnpm build
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

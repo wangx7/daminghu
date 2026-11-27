@@ -1,4 +1,4 @@
-import Peer, { type DataConnection } from 'peerjs';
+import Peer, { type DataConnection, type PeerOptions } from 'peerjs';
 import {
   DEFAULT_ROOM_CONFIG,
   WEAPON_MAP,
@@ -9,6 +9,7 @@ import {
   type KillFeedItem,
   type MatchResultSummary,
   type NetEntitySnapshot,
+  type P2PNetworkOptions,
   type RoomConfig,
   type RoomConnectionStatus,
   type RoomMember,
@@ -20,6 +21,7 @@ import {
   type WeaponId,
 } from '@daminghu/shared';
 import { sampleTerrain } from './legacy/map_data.js';
+import { createBrowserPlatformAdapter, type PlatformAdapter } from './platformAdapter';
 
 export interface LocalPlayerNetState {
   x: number;
@@ -42,7 +44,7 @@ export interface PassengerSyncInfo {
 export interface P2PRoomCallbacks {
   onRoomUpdate?: (snapshot: RoomSnapshot) => void;
   onWorldSnapshot?: (entities: NetEntitySnapshot[], localPlayerId: string) => void;
-  onProjectileFx?: (shooterId: string, x: number, y: number, z: number, yaw: number, weaponId: WeaponId) => void;
+  onProjectileFx?: (shooterId: string, x: number, y: number, z: number, yaw: number, weaponId: WeaponId, pitch?: number) => void;
   onLocalRespawn?: (x: number, z: number, yaw: number) => void;
   onPassengerSync?: (info: PassengerSyncInfo) => void;
   onForceExitVehicle?: (autoParachute: boolean, reason: string) => void;
@@ -50,6 +52,40 @@ export interface P2PRoomCallbacks {
   onChatBubble?: (event: ChatBubbleEvent) => void;
   onMatchEnd?: (result: MatchResultSummary) => void;
   onNotice?: (title: string, body: string) => void;
+  onLocalHit?: (damage: number, eliminated: boolean, kind: 'player' | 'vehicle') => void;
+  onLocalDamaged?: (damage: number, remainingHp: number) => void;
+}
+
+/**
+ * 3D 射线到目标点的精确命中判定（支持高空防空对射，不再受限于水平 dy <= 5.0）
+ */
+export function compute3DRayHit(
+  originX: number,
+  originY: number,
+  originZ: number,
+  dirX: number,
+  dirY: number,
+  dirZ: number,
+  maxRange: number,
+  targetX: number,
+  targetY: number,
+  targetZ: number,
+  hitRadius: number,
+): { hit: boolean; proj: number; perpDist: number } {
+  const dx = targetX - originX;
+  const dy = targetY - originY;
+  const dz = targetZ - originZ;
+  const proj = dx * dirX + dy * dirY + dz * dirZ;
+  if (proj < 0 || proj > maxRange) {
+    return { hit: false, proj, perpDist: Infinity };
+  }
+  const distSq = dx * dx + dy * dy + dz * dz;
+  const perpSq = Math.max(0, distSq - proj * proj);
+  return {
+    hit: perpSq <= hitRadius * hitRadius,
+    proj,
+    perpDist: Math.sqrt(perpSq),
+  };
 }
 
 function getVehicleMaxHp(v: VehicleMode): number {
@@ -75,6 +111,7 @@ function getVehicleCnName(v: VehicleMode): string {
 interface HostEntity extends NetEntitySnapshot {
   isHost: boolean;
   respawnTimer: number;
+  lastFireAt: number;
   botHomeX: number;
   botHomeZ: number;
   botPhase: number;
@@ -88,13 +125,12 @@ const BOT_NAMES_RED = ['超然小侠', '明湖赤羽', '鹊华红枫', '历下�
 const BOT_NAMES_BLUE = ['荷风青岚', '汇波沧澜', '碧水游侠', '雪梅清影', '明湖青松'];
 const BOT_SKINS: SkinId[] = ['spring_willow', 'summer_lotus', 'autumn_maple', 'winter_snow'];
 
-const ICE_CONFIG: RTCConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' },
-  ],
-};
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.miwifi.com:3478' },
+  { urls: 'stun:stun.qq.com:3478' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:stun.l.google.com:19302' },
+];
 
 function generateRoomCode(): string {
   let out = '';
@@ -128,6 +164,8 @@ function getSafeSpawnPoint(team: TeamId, slotIdx: number, collider?: any): { x: 
 export class P2PRoomClient {
   private callbacks: P2PRoomCallbacks;
   private collider: any;
+  private platform: PlatformAdapter;
+  private networkOptions: P2PNetworkOptions;
   private peer: Peer | null = null;
   private hostConn: DataConnection | null = null;
   private guestConns = new Map<string, DataConnection>();
@@ -159,9 +197,34 @@ export class P2PRoomClient {
   private msgSeq = 1;
   private joinTimer: number | null = null;
 
-  constructor(callbacks: P2PRoomCallbacks = {}, collider?: any) {
+  constructor(
+    callbacks: P2PRoomCallbacks = {},
+    collider?: any,
+    platform: PlatformAdapter = createBrowserPlatformAdapter(),
+    networkOptions: P2PNetworkOptions = {},
+  ) {
     this.callbacks = callbacks;
     this.collider = collider ?? null;
+    this.platform = platform;
+    this.networkOptions = networkOptions;
+  }
+
+  private buildPeerOptions(): PeerOptions {
+    const opts: PeerOptions = {
+      config: {
+        iceServers: this.networkOptions.iceServers?.length
+          ? (this.networkOptions.iceServers as RTCIceServer[])
+          : DEFAULT_ICE_SERVERS,
+      },
+      debug: 0,
+    };
+    if (this.networkOptions.peerServer) {
+      opts.host = this.networkOptions.peerServer.host;
+      if (this.networkOptions.peerServer.port !== undefined) opts.port = this.networkOptions.peerServer.port;
+      if (this.networkOptions.peerServer.path !== undefined) opts.path = this.networkOptions.peerServer.path;
+      if (this.networkOptions.peerServer.secure !== undefined) opts.secure = this.networkOptions.peerServer.secure;
+    }
+    return opts;
   }
 
   get active(): boolean {
@@ -253,7 +316,7 @@ export class P2PRoomClient {
 
   private clearJoinTimer() {
     if (this.joinTimer !== null) {
-      window.clearTimeout(this.joinTimer);
+      this.platform.clearTimeout(this.joinTimer);
       this.joinTimer = null;
     }
   }
@@ -276,10 +339,10 @@ export class P2PRoomClient {
     this.emitRoom();
 
     const peerId = `${PEER_PREFIX}${this.roomCode}`;
-    const peer = new Peer(peerId, { config: ICE_CONFIG, debug: 0 });
+    const peer = new Peer(peerId, this.buildPeerOptions());
     this.peer = peer;
 
-    this.joinTimer = window.setTimeout(() => {
+    this.joinTimer = this.platform.setTimeout(() => {
       if (this.status === 'creating') {
         this.failConnection('连接信令服务器超时，请检查网络后重试');
       }
@@ -313,6 +376,7 @@ export class P2PRoomClient {
         kills: 0,
         deaths: 0,
         respawnTimer: 0,
+        lastFireAt: 0,
         botHomeX: localState.x,
         botHomeZ: localState.z,
         botPhase: 0,
@@ -381,10 +445,10 @@ export class P2PRoomClient {
     this.localAlive = true;
     this.emitRoom();
 
-    const peer = new Peer({ config: ICE_CONFIG, debug: 0 });
+    const peer = new Peer(this.buildPeerOptions());
     this.peer = peer;
 
-    this.joinTimer = window.setTimeout(() => {
+    this.joinTimer = this.platform.setTimeout(() => {
       if (this.status === 'joining') {
         this.failConnection('连接房主超时（房间不存在或当前网络 NAT 限制较严，建议切换同一 Wi-Fi / 手机热点重试）');
       }
@@ -392,7 +456,8 @@ export class P2PRoomClient {
 
     peer.on('open', (id) => {
       this.localPlayerId = id;
-      const conn = peer.connect(`${PEER_PREFIX}${code}`, { reliable: false });
+      // 使用 reliable: true 确保 join/welcome/room_sync/respawn/passenger_sync/match_end 等关键控制消息零丢包
+      const conn = peer.connect(`${PEER_PREFIX}${code}`, { reliable: true });
       this.hostConn = conn;
 
       conn.on('open', () => {
@@ -648,6 +713,7 @@ export class P2PRoomClient {
       kills: 0,
       deaths: 0,
       respawnTimer: 0,
+      lastFireAt: 0,
       botHomeX: sp.x,
       botHomeZ: sp.z,
       botPhase: idx * 1.1,
@@ -656,12 +722,12 @@ export class P2PRoomClient {
   }
 
   // ===== 4. 开火与快捷气泡聊天 =====
-  sendFire(x: number, y: number, z: number, yaw: number, weaponId: WeaponId) {
+  sendFire(x: number, y: number, z: number, yaw: number, weaponId: WeaponId, pitch = 0) {
     if (this.status !== 'connected' || !this.localAlive) return;
     if (this.isHost) {
-      this.processAuthoritativeFire(this.localPlayerId, x, y, z, yaw, weaponId);
+      this.processAuthoritativeFire(this.localPlayerId, x, y, z, yaw, weaponId, pitch);
     } else {
-      this.sendToHost({ type: 'fire', x, y, z, yaw, weaponId });
+      this.sendToHost({ type: 'fire', x, y, z, yaw, pitch, weaponId });
     }
   }
 
@@ -851,6 +917,7 @@ export class P2PRoomClient {
         kills: 0,
         deaths: 0,
         respawnTimer: 0,
+        lastFireAt: 0,
         botHomeX: sp.x,
         botHomeZ: sp.z,
         botPhase: 0,
@@ -897,7 +964,7 @@ export class P2PRoomClient {
       entity.weaponId = msg.weaponId;
     } else if (msg.type === 'fire') {
       if (entity.alive) {
-        this.processAuthoritativeFire(guestId, msg.x, msg.y, msg.z, msg.yaw, msg.weaponId);
+        this.processAuthoritativeFire(guestId, msg.x, msg.y, msg.z, msg.yaw, msg.weaponId, msg.pitch ?? 0);
       }
     } else if (msg.type === 'switch_team') {
       entity.team = msg.team;
@@ -939,6 +1006,9 @@ export class P2PRoomClient {
       this.timeRemainingSec = msg.timeRemainingSec;
       const me = msg.entities.find((e) => e.id === this.localPlayerId);
       if (me) {
+        if (me.hp < this.localHp && this.phase === 'playing') {
+          this.callbacks.onLocalDamaged?.(this.localHp - me.hp, me.hp);
+        }
         this.localHp = me.hp;
         this.localAlive = me.alive;
         if (me.passengerOf) {
@@ -968,9 +1038,17 @@ export class P2PRoomClient {
         });
         if (msg.ejectReason) this.callbacks.onNotice?.('载具提示', msg.ejectReason);
       }
+    } else if (msg.type === 'force_exit_vehicle') {
+      if (msg.targetId === this.localPlayerId) {
+        this.localVehicleHp = 0;
+        this.localVehicleMaxHp = 0;
+        this.callbacks.onForceExitVehicle?.(msg.autoParachute, msg.reason);
+      }
+    } else if (msg.type === 'hit_confirm') {
+      this.callbacks.onLocalHit?.(msg.damage, msg.eliminated, msg.kind);
     } else if (msg.type === 'projectile_fx') {
       if (msg.shooterId !== this.localPlayerId) {
-        this.callbacks.onProjectileFx?.(msg.shooterId, msg.x, msg.y, msg.z, msg.yaw, msg.weaponId);
+        this.callbacks.onProjectileFx?.(msg.shooterId, msg.x, msg.y, msg.z, msg.yaw, msg.weaponId, msg.pitch ?? 0);
       }
     } else if (msg.type === 'respawn') {
       if (msg.targetId === this.localPlayerId) {
@@ -1012,22 +1090,34 @@ export class P2PRoomClient {
     z: number,
     yaw: number,
     weaponId: WeaponId,
+    pitch = 0,
   ) {
     const shooter = this.hostEntities.get(shooterId);
     if (!shooter || !shooter.alive) return;
 
+    const weapon = WEAPON_MAP[weaponId] || WEAPON_MAP.spring_blaster;
+    // 服务端冷却校验（留 20% 网络抖动容差，防止异常高频刷弹）
+    const now = this.platform.now();
+    const minCdMs = weapon.cooldownSec * 800;
+    if (!shooter.isBot && shooter.lastFireAt > 0 && now - shooter.lastFireAt < minCdMs) {
+      return;
+    }
+    shooter.lastFireAt = now;
+
     // 广播视觉弹道给其他玩家
-    this.broadcastToGuests({ type: 'projectile_fx', shooterId, x, y, z, yaw, weaponId });
+    this.broadcastToGuests({ type: 'projectile_fx', shooterId, x, y, z, yaw, pitch, weaponId });
     if (shooterId !== this.localPlayerId) {
-      this.callbacks.onProjectileFx?.(shooterId, x, y, z, yaw, weaponId);
+      this.callbacks.onProjectileFx?.(shooterId, x, y, z, yaw, weaponId, pitch);
     }
 
     if (this.phase !== 'playing' || this.config.mode === 'coop_roam') return;
 
-    const weapon = WEAPON_MAP[weaponId] || WEAPON_MAP.spring_blaster;
-    const fx = Math.sin(yaw);
-    const fz = Math.cos(yaw);
-    const hitRadius = Math.max(2.6, weapon.splashRadius * 0.7);
+    const clampedPitch = Math.max(-1.15, Math.min(1.15, pitch));
+    const cosP = Math.cos(clampedPitch);
+    const fx = Math.sin(yaw) * cosP;
+    const fy = Math.sin(clampedPitch);
+    const fz = Math.cos(yaw) * cosP;
+    const baseHitRadius = Math.max(2.6, weapon.splashRadius * 0.7);
 
     // 先做 3D 实心墙/建筑/树木遮挡射线检测：墙体之后的敌人绝不能被隔墙打穿！
     const shootY = y + 1.35;
@@ -1035,10 +1125,10 @@ export class P2PRoomClient {
     if (this.collider) {
       const wallHit = this.collider.raycastSolid(
         x + fx * 0.8,
-        shootY,
+        shootY + fy * 0.8,
         z + fz * 0.8,
         x + fx * weapon.maxRange,
-        shootY,
+        shootY + fy * weapon.maxRange,
         z + fz * weapon.maxRange,
         0.5,
       );
@@ -1047,25 +1137,35 @@ export class P2PRoomClient {
       }
     }
 
-    // 射线距离判定（仅判定墙体之前的可视目标）
+    // 3D 射线到目标中心点距离判定（支持高空直升机防空对射，且仅判定墙体之前的可视目标）
     for (const target of this.hostEntities.values()) {
       if (target.id === shooterId || !target.alive) continue;
       if (this.config.mode === 'team' && target.team === shooter.team) continue;
 
-      const dx = target.x - x;
-      const dz = target.z - z;
-      const proj = dx * fx + dz * fz;
-      if (proj < 0 || proj > maxEffectiveRange) continue;
-      const perpSq = dx * dx + dz * dz - proj * proj;
-      const dy = Math.abs(target.y - y);
-      if (perpSq <= hitRadius * hitRadius && dy <= 5.0) {
+      const targetRadius = target.vehicle === 'heli' ? Math.max(baseHitRadius, 4.2) : baseHitRadius;
+      const hitRes = compute3DRayHit(
+        x,
+        shootY,
+        z,
+        fx,
+        fy,
+        fz,
+        maxEffectiveRange,
+        target.x,
+        target.y + 1.25,
+        target.z,
+        targetRadius,
+      );
+      if (hitRes.hit) {
         // 对战中击中载具司机时优先扣减载具耐久（鹊华长弓对直升机 1.5 倍防空伤害！）
         if (target.vehicleMaxHp > 0 && target.vehicleHp > 0 && getVehicleMaxPassengers(target.vehicle) > 0) {
           const antiAir = weaponId === 'quehua_bow' && target.vehicle === 'heli' ? 1.5 : 1.0;
           const vDmg = Math.round(weapon.damage * antiAir);
           target.vehicleHp = Math.max(0, target.vehicleHp - vDmg);
+          const destroyed = target.vehicleHp <= 0;
+          this.notifyShooterHit(shooterId, vDmg, destroyed, 'vehicle');
           if (target.id === this.localPlayerId) this.localVehicleHp = target.vehicleHp;
-          if (target.vehicleHp <= 0) {
+          if (destroyed) {
             const vName = getVehicleCnName(target.vehicle);
             const autoPara = target.vehicle === 'heli' && target.y > 5.5;
             const feedText = `🔥 ${shooter.name} 用 ${weapon.name} 击毁了 ${target.name} 的${vName}！`;
@@ -1074,12 +1174,21 @@ export class P2PRoomClient {
             this.ejectPassengersOf(target.id, autoPara, `${vName}被击毁，已安全弹出！`);
             target.vehicle = autoPara ? 'parachute' : 'foot';
             target.vehicleMaxHp = 0;
+            const driverReason = `${vName}被击毁，${autoPara ? '已自动张开降落伞迫降！' : '已安全跳车！'}`;
             if (target.id === this.localPlayerId) {
               this.localVehicleHp = 0;
               this.localVehicleMaxHp = 0;
-              this.callbacks.onForceExitVehicle?.(autoPara, `${vName}被击毁，${autoPara ? '已自动张开降落伞迫降！' : '已安全跳车！'}`);
+              this.callbacks.onForceExitVehicle?.(autoPara, driverReason);
             } else if (!target.isBot) {
-              this.emitPassengerSync(target.id, null, -1, null, autoPara, `${vName}被击毁！`);
+              const conn = this.guestConns.get(target.id);
+              if (conn?.open) {
+                conn.send({
+                  type: 'force_exit_vehicle',
+                  targetId: target.id,
+                  autoParachute: autoPara,
+                  reason: driverReason,
+                } satisfies HostToClientMsg);
+              }
             }
             // 载具爆破附带轻微震荡扣血（不直接秒杀）
             if (target.hp > 25) {
@@ -1095,13 +1204,27 @@ export class P2PRoomClient {
     }
   }
 
+  private notifyShooterHit(shooterId: string, damage: number, eliminated: boolean, kind: 'player' | 'vehicle') {
+    if (shooterId === this.localPlayerId) {
+      this.callbacks.onLocalHit?.(damage, eliminated, kind);
+    } else {
+      const conn = this.guestConns.get(shooterId);
+      if (conn?.open) {
+        conn.send({ type: 'hit_confirm', damage, eliminated, kind } satisfies HostToClientMsg);
+      }
+    }
+  }
+
   private applyDamage(shooter: HostEntity, target: HostEntity, damage: number, weaponName: string) {
     target.hp = Math.max(0, target.hp - damage);
+    const eliminated = target.hp <= 0;
+    this.notifyShooterHit(shooter.id, damage, eliminated, 'player');
     if (target.id === this.localPlayerId) {
       this.localHp = target.hp;
+      this.callbacks.onLocalDamaged?.(damage, target.hp);
     }
 
-    if (target.hp <= 0) {
+    if (eliminated) {
       target.alive = false;
       target.deaths++;
       target.respawnTimer = 3.0;
@@ -1197,7 +1320,8 @@ export class P2PRoomClient {
           if (!blocked) {
             bot.botFireCd = 1.6 + Math.random() * 1.1;
             const spreadYaw = bot.yaw + (Math.random() - 0.5) * 0.22;
-            this.processAuthoritativeFire(bot.id, bot.x, bot.y, bot.z, spreadYaw, bot.weaponId || 'spring_blaster');
+            const aimPitch = Math.atan2(nearest.y - bot.y, Math.max(1, bestDist));
+            this.processAuthoritativeFire(bot.id, bot.x, bot.y, bot.z, spreadYaw, bot.weaponId || 'spring_blaster', aimPitch);
           }
         }
       } else {

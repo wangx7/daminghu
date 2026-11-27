@@ -11,7 +11,9 @@ import {
   type WeaponId,
 } from '@daminghu/shared';
 import { buildWeaponMesh } from './combatSystem';
+import { createBrowserPlatformAdapter, type PlatformAdapter } from './platformAdapter';
 import { buildSeasonalTuanMesh } from './skinRenderer';
+import { disposeObject3D } from './threeDispose';
 
 export interface BoardableVehicleHint {
   driverId: string;
@@ -183,12 +185,16 @@ function buildMiniParachuteShell(): THREE.Group {
 export class RemotePlayerManager {
   private scene: THREE.Scene;
   private collider: any;
+  private platform: PlatformAdapter;
   private avatars = new Map<string, RemoteAvatar>();
   private projectiles: RemoteProjectile[] = [];
+  private projGeoCache = new Map<string, THREE.BufferGeometry>();
+  private projMatCache = new Map<string, THREE.MeshBasicMaterial>();
 
-  constructor(scene: THREE.Scene, collider?: any) {
+  constructor(scene: THREE.Scene, collider?: any, platform: PlatformAdapter = createBrowserPlatformAdapter()) {
     this.scene = scene;
     this.collider = collider ?? null;
+    this.platform = platform;
   }
 
   private createAvatar(snap: NetEntitySnapshot): RemoteAvatar {
@@ -215,9 +221,7 @@ export class RemotePlayerManager {
     const parachuteShell = buildMiniParachuteShell();
     root.add(carShell, heli.group, boatShell, parachuteShell);
 
-    const labelCanvas = document.createElement('canvas');
-    labelCanvas.width = 320;
-    labelCanvas.height = 112;
+    const labelCanvas = this.platform.createCanvas(320, 112);
     const labelCtx = labelCanvas.getContext('2d')!;
     const labelTex = new THREE.CanvasTexture(labelCanvas);
     labelTex.needsUpdate = true;
@@ -354,7 +358,11 @@ export class RemotePlayerManager {
 
       if (a.skinId !== snap.skinId) {
         a.skinId = snap.skinId;
-        while (a.avatarHolder.children.length > 0) a.avatarHolder.remove(a.avatarHolder.children[0]);
+        while (a.avatarHolder.children.length > 0) {
+          const child = a.avatarHolder.children[0];
+          a.avatarHolder.remove(child);
+          disposeObject3D(child);
+        }
         const skin = SKIN_MAP[snap.skinId] || SKIN_MAP.summer_lotus;
         const tuanMesh = buildSeasonalTuanMesh(skin);
         tuanMesh.position.y = 0.12;
@@ -363,7 +371,11 @@ export class RemotePlayerManager {
 
       if (a.weaponId !== snap.weaponId) {
         a.weaponId = snap.weaponId;
-        while (a.weaponHolder.children.length > 0) a.weaponHolder.remove(a.weaponHolder.children[0]);
+        while (a.weaponHolder.children.length > 0) {
+          const child = a.weaponHolder.children[0];
+          a.weaponHolder.remove(child);
+          disposeObject3D(child);
+        }
         if (snap.weaponId) {
           a.weaponHolder.add(buildWeaponMesh(WEAPON_MAP[snap.weaponId]));
         }
@@ -389,7 +401,7 @@ export class RemotePlayerManager {
     for (const [id, avatar] of this.avatars.entries()) {
       if (!activeIds.has(id)) {
         this.scene.remove(avatar.root);
-        avatar.labelTex.dispose();
+        disposeObject3D(avatar.root, { disposeTextures: true });
         this.avatars.delete(id);
       }
     }
@@ -399,20 +411,31 @@ export class RemotePlayerManager {
     const a = this.avatars.get(senderId);
     if (!a) return;
     a.chatText = text;
-    a.chatExpireAt = performance.now() + 4500;
+    a.chatExpireAt = this.platform.now() + 4500;
     a.labelDirty = true;
   }
 
-  spawnProjectileFx(x: number, y: number, z: number, yaw: number, weaponId: WeaponId) {
+  spawnProjectileFx(x: number, y: number, z: number, yaw: number, weaponId: WeaponId, pitch = 0) {
     const weapon = WEAPON_MAP[weaponId] || WEAPON_MAP.spring_blaster;
-    const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(weapon.id === 'lotus_mortar' ? 0.42 : 0.24, 8, 8),
-      new THREE.MeshBasicMaterial({ color: weapon.accentColor }),
-    );
-    mesh.position.set(x + Math.sin(yaw) * 1.4, y + 1.35, z + Math.cos(yaw) * 1.4);
+    let geo = this.projGeoCache.get(weapon.id);
+    if (!geo) {
+      geo = new THREE.SphereGeometry(weapon.id === 'lotus_mortar' ? 0.42 : 0.24, 8, 8);
+      this.projGeoCache.set(weapon.id, geo);
+    }
+    let mat = this.projMatCache.get(weapon.id);
+    if (!mat) {
+      mat = new THREE.MeshBasicMaterial({ color: weapon.accentColor });
+      this.projMatCache.set(weapon.id, mat);
+    }
+    const mesh = new THREE.Mesh(geo, mat);
+    const cosP = Math.cos(pitch);
+    const fx = Math.sin(yaw) * cosP;
+    const fy = Math.sin(pitch);
+    const fz = Math.cos(yaw) * cosP;
+    mesh.position.set(x + fx * 1.4, y + 1.35 + fy * 1.4, z + fz * 1.4);
     this.scene.add(mesh);
 
-    const vel = new THREE.Vector3(Math.sin(yaw) * weapon.projectileSpeed, 0, Math.cos(yaw) * weapon.projectileSpeed);
+    const vel = new THREE.Vector3(fx * weapon.projectileSpeed, fy * weapon.projectileSpeed, fz * weapon.projectileSpeed);
     this.projectiles.push({ mesh, vel, life: weapon.maxRange / Math.max(10, weapon.projectileSpeed) });
   }
 
@@ -420,6 +443,39 @@ export class RemotePlayerManager {
     const a = this.avatars.get(playerId);
     if (!a) return null;
     return { x: a.root.position.x, y: a.root.position.y, z: a.root.position.z };
+  }
+
+  /** 联机准星中心射线目标吸附（跳过队友与死亡目标） */
+  findAimTargetPoint(
+    rayOrigin: THREE.Vector3,
+    rayDir: THREE.Vector3,
+    maxRange: number,
+    localTeam: TeamId,
+    roomMode: 'coop_roam' | 'ffa' | 'team',
+  ): THREE.Vector3 | null {
+    let bestT = maxRange;
+    let bestPoint: THREE.Vector3 | null = null;
+    for (const a of this.avatars.values()) {
+      if (!a.alive) continue;
+      if (roomMode === 'team' && localTeam !== 'none' && a.team === localTeam) continue;
+      const cx = a.root.position.x;
+      const cy = a.root.position.y + 1.25;
+      const cz = a.root.position.z;
+      const rx = cx - rayOrigin.x;
+      const ry = cy - rayOrigin.y;
+      const rz = cz - rayOrigin.z;
+      const t = rx * rayDir.x + ry * rayDir.y + rz * rayDir.z;
+      if (t <= 2 || t >= bestT) continue;
+      const radius = a.vehicle === 'heli' ? 4.2 : 2.5;
+      const px = rayOrigin.x + rayDir.x * t - cx;
+      const py = rayOrigin.y + rayDir.y * t - cy;
+      const pz = rayOrigin.z + rayDir.z * t - cz;
+      if (px * px + py * py + pz * pz <= radius * radius) {
+        bestT = t;
+        bestPoint = new THREE.Vector3(cx, cy, cz);
+      }
+    }
+    return bestPoint;
   }
 
   getDriverSeatWorldPos(driverId: string, seatIndex: number): { x: number; y: number; z: number; yaw: number; vehicle: VehicleMode } | null {
@@ -516,7 +572,7 @@ export class RemotePlayerManager {
   }
 
   update(dt: number, elapsed: number) {
-    const now = performance.now();
+    const now = this.platform.now();
     const alpha = Math.min(1, dt * 12);
     for (const a of this.avatars.values()) {
       // 若距离过远（如传送/复活）直接瞬移，否则平滑插值
@@ -556,8 +612,6 @@ export class RemotePlayerManager {
         this.collider.raycastSolid(prevX, prevY, prevZ, p.mesh.position.x, p.mesh.position.y, p.mesh.position.z, 0.45);
       if (p.life <= 0 || hitWall) {
         this.scene.remove(p.mesh);
-        p.mesh.geometry.dispose();
-        (p.mesh.material as THREE.Material).dispose();
         this.projectiles.splice(i, 1);
       }
     }
@@ -566,12 +620,20 @@ export class RemotePlayerManager {
   clear() {
     for (const a of this.avatars.values()) {
       this.scene.remove(a.root);
-      a.labelTex.dispose();
+      disposeObject3D(a.root, { disposeTextures: true });
     }
     this.avatars.clear();
     for (const p of this.projectiles) {
       this.scene.remove(p.mesh);
     }
     this.projectiles = [];
+  }
+
+  dispose() {
+    this.clear();
+    for (const geo of this.projGeoCache.values()) geo.dispose();
+    this.projGeoCache.clear();
+    for (const mat of this.projMatCache.values()) mat.dispose();
+    this.projMatCache.clear();
   }
 }

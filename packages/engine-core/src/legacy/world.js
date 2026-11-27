@@ -123,6 +123,11 @@ export const HERO_LOTUS_SPOTS = [
 ];
 
 export class ChunkWorld {
+  /**
+   * @param {THREE.Scene} scene
+   * @param {THREE.Material} mat
+   * @param {any} [collider]
+   */
   constructor(scene, mat, collider = null) {
     this.scene = scene;
     this.mat = mat;

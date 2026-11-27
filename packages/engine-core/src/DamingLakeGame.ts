@@ -1,14 +1,18 @@
 import * as THREE from 'three';
 import {
   SKIN_MAP,
+  WEAPON_MAP,
   type BgmScene,
   type ChatBubbleEvent,
   type EquippedWeaponId,
   type GameMode,
+  type GraphicsQuality,
+  type HitFeedbackEvent,
   type HudSnapshot,
   type KillFeedItem,
   type LandmarkSummary,
   type MatchResultSummary,
+  type P2PNetworkOptions,
   type RoomConfig,
   type RoomSnapshot,
   type SeasonKey,
@@ -20,8 +24,10 @@ import { GuofengBgmEngine } from './bgmEngine';
 import { CombatSystem } from './combatSystem';
 import { renderDamingMinimap } from './minimapRenderer';
 import { P2PRoomClient, type LocalPlayerNetState } from './p2pRoomClient';
+import { createBrowserPlatformAdapter, type PlatformAdapter } from './platformAdapter';
 import { RemotePlayerManager } from './remotePlayerManager';
 import { applySkinToPlayer } from './skinRenderer';
+import { disposeObject3D } from './threeDispose';
 
 import { WorldCollider } from './legacy/collider.js';
 import { ChunkWorld, SEASON_PALETTES } from './legacy/world.js';
@@ -41,9 +47,19 @@ export interface GameCallbacks {
   onHudUpdate?: (snapshot: HudSnapshot) => void;
   onNotice?: (title: string, body: string) => void;
   onKillFeed?: (item: KillFeedItem) => void;
+  onHitFeedback?: (event: HitFeedbackEvent) => void;
+  onPlayerDamaged?: (damage: number, remainingHp: number) => void;
+  onWeaponSlotHotkey?: (slot: 1 | 2 | 3) => void;
   onRoomUpdate?: (snapshot: RoomSnapshot) => void;
   onChatBubble?: (event: ChatBubbleEvent) => void;
   onMatchEnd?: (result: MatchResultSummary) => void;
+}
+
+export interface DamingLakeGameOptions {
+  platform?: PlatformAdapter;
+  network?: P2PNetworkOptions;
+  initialQuality?: GraphicsQuality;
+  playerName?: string;
 }
 
 const SEASONS: SeasonKey[] = ['spring', 'summer', 'autumn', 'winter'];
@@ -51,24 +67,25 @@ const SEASONS: SeasonKey[] = ['spring', 'summer', 'autumn', 'winter'];
 export class DamingLakeGame {
   private container: HTMLElement;
   private callbacks: GameCallbacks;
+  private platform: PlatformAdapter;
 
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
-  private collider: any;
+  private collider: WorldCollider;
   private snowMeshes: THREE.Object3D[] = [];
-  private world: any;
-  private water: any;
+  private world: ChunkWorld;
+  private water: ReturnType<typeof createLakeWater>;
   private districts: any;
   private coreRefs: any;
   private living: any;
   private player: any;
-  private sky: any;
+  private sky: SkyAndLighting;
   private weather: any;
-  private sound: any;
+  private sound: SoundEngine;
   private bgm: GuofengBgmEngine;
   private minghuShow: any;
-  private director: any;
+  private director: DirectorMode;
   private combat: CombatSystem;
   private remotePlayers: RemotePlayerManager;
   private room: P2PRoomClient;
@@ -77,6 +94,9 @@ export class DamingLakeGame {
   private virtualInput = { moveX: 0, moveZ: 0 };
   private seasonIdx = 1; // summer
   private skinId: SkinId = 'summer_lotus';
+  private quality: GraphicsQuality = 'high';
+  private renderPaused = false;
+  private inputBlocked = false;
   private visitedIds = new Set<string>();
   private rafId = 0;
   private clock = new THREE.Clock();
@@ -85,7 +105,15 @@ export class DamingLakeGame {
   private lastDriverFireTipAt = 0;
   private lastSpaceDown = 0;
   private lookPointers = new Map<number, { x: number; y: number }>();
+  private pointerDownMeta = new Map<number, { x: number; y: number; at: number; pointerType: string; button: number }>();
   private lastPinchDist: number | null = null;
+  private mouseAutoFire = false;
+  private camShake = 0;
+  private netHitSeq = 1;
+  private _tmpCamDir = new THREE.Vector3();
+  private _tmpAimTarget = new THREE.Vector3();
+  private _tmpMuzzle = new THREE.Vector3();
+  private _tmpAimDir = new THREE.Vector3();
 
   private boundKeyDown: (e: KeyboardEvent) => void;
   private boundKeyUp: (e: KeyboardEvent) => void;
@@ -94,19 +122,21 @@ export class DamingLakeGame {
   private boundPointerDown: (e: PointerEvent) => void;
   private boundPointerMove: (e: PointerEvent) => void;
   private boundPointerUp: (e: PointerEvent) => void;
+  private boundContextMenu: (e: MouseEvent) => void;
   private boundBlur: () => void;
   private boundUnlockAudio: () => void;
 
-  constructor(container: HTMLElement, callbacks: GameCallbacks = {}) {
+  constructor(container: HTMLElement, callbacks: GameCallbacks = {}, options: DamingLakeGameOptions = {}) {
     this.container = container;
     this.callbacks = callbacks;
+    this.platform = options.platform ?? createBrowserPlatformAdapter();
+    this.quality = options.initialQuality ?? (this.platform.isMobileViewport() ? 'medium' : 'high');
 
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: this.quality !== 'low',
       powerPreference: 'high-performance',
-      preserveDrawingBuffer: true,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(this.platform.getDevicePixelRatio(), this.quality === 'high' ? 2 : 1.5));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -142,23 +172,27 @@ export class DamingLakeGame {
     this.sky = new SkyAndLighting(this.scene, this.renderer, this.camera, this.water.uniforms, this.coreRefs.chaoran);
     this.weather = new SeasonWeather(this.scene);
     this.sound = new SoundEngine();
-    this.bgm = new GuofengBgmEngine();
+    this.bgm = new GuofengBgmEngine(this.platform);
     this.minghuShow = new (MinghuShow as any)(this.scene, this.sound, voxelMat, this.collider);
     this.director = new DirectorMode({
       camera: this.camera,
       world: this.world,
       sky: this.sky,
       onStateChange: () => this.emitHud(),
+      onCaptionChange: (title: string, subtitle: string) => this.callbacks.onNotice?.(title, subtitle),
     });
 
     // 挂载武器与默认皮肤（传入全局 3D 碰撞器，确保子弹与 AI 绝不穿墙/穿模）
     this.combat = new CombatSystem(this.scene, this.bgm, this.collider);
+    if (options.playerName) this.combat.setPlayerName(options.playerName);
     this.combat.onKillFeed = (item) => this.callbacks.onKillFeed?.(item);
+    this.combat.onHitFeedback = (evt) => this.callbacks.onHitFeedback?.(evt);
+    this.combat.onPlayerDamaged = (dmg, hp) => this.callbacks.onPlayerDamaged?.(dmg, hp);
     applySkinToPlayer(this.player, SKIN_MAP[this.skinId]);
     this.combat.mountWeaponToPlayer(this.player.root);
 
     // 挂载 WebRTC P2P 多人联机系统与 3D 远端角色管理器（传入碰撞器防子弹/角色穿模）
-    this.remotePlayers = new RemotePlayerManager(this.scene, this.collider);
+    this.remotePlayers = new RemotePlayerManager(this.scene, this.collider, this.platform);
     this.room = new P2PRoomClient({
       onRoomUpdate: (snap) => {
         if (snap.phase === 'playing') {
@@ -176,8 +210,8 @@ export class DamingLakeGame {
       onWorldSnapshot: (entities, localPlayerId) => {
         this.remotePlayers.syncEntities(entities, localPlayerId);
       },
-      onProjectileFx: (_shooterId, x, y, z, yaw, weaponId) => {
-        this.remotePlayers.spawnProjectileFx(x, y, z, yaw, weaponId);
+      onProjectileFx: (_shooterId, x, y, z, yaw, weaponId, pitch) => {
+        this.remotePlayers.spawnProjectileFx(x, y, z, yaw, weaponId, pitch ?? 0);
       },
       onLocalRespawn: (x, z, yaw) => {
         this.player.teleport(x, z, yaw);
@@ -216,14 +250,29 @@ export class DamingLakeGame {
       },
       onMatchEnd: (result) => this.callbacks.onMatchEnd?.(result),
       onNotice: (title, body) => this.callbacks.onNotice?.(title, body),
-    }, this.collider);
+      onLocalHit: (damage, eliminated, kind) => {
+        this.bgm.playHit(eliminated);
+        this.callbacks.onHitFeedback?.({
+          id: 100000 + this.netHitSeq++,
+          damage,
+          eliminated,
+          kind,
+          timestamp: Date.now(),
+        });
+      },
+      onLocalDamaged: (damage, remainingHp) => {
+        this.bgm.playPlayerHurt();
+        this.callbacks.onPlayerDamaged?.(damage, remainingHp);
+      },
+    }, this.collider, this.platform, options.network);
 
-    this.world.primeAround(this.player.pos.x, this.player.pos.z, 3);
+    this.applyQualitySettings(this.quality);
+    this.world.primeAround(this.player.pos.x, this.player.pos.z, this.quality === 'low' ? 2 : 3);
 
-    // 音频解锁
+    // 音频解锁（共享单一 AudioContext，降低移动端功耗并规避 iOS 多实例限制）
     this.boundUnlockAudio = () => {
-      this.sound.unlock();
-      this.bgm.unlock();
+      const sharedCtx = this.bgm.unlock();
+      this.sound.unlock(sharedCtx);
     };
     window.addEventListener('pointerdown', this.boundUnlockAudio, { once: true });
     window.addEventListener('keydown', this.boundUnlockAudio, { once: true });
@@ -236,12 +285,30 @@ export class DamingLakeGame {
     window.addEventListener('keydown', this.boundKeyDown);
     window.addEventListener('keyup', this.boundKeyUp);
 
-    // 鼠标拖拽视角 + 手机多点触控旋转视角与双指捏合缩放
+    // 鼠标拖拽视角 + 持枪左键点射/右键连发 + 手机多点触控旋转视角与双指捏合缩放
     const canvas = this.renderer.domElement;
     canvas.style.touchAction = 'none';
+    this.boundContextMenu = (e: MouseEvent) => {
+      if (this.combat.weaponId !== null) e.preventDefault();
+    };
     this.boundPointerDown = (e: PointerEvent) => {
+      if (this.inputBlocked) return;
+      if (e.pointerType !== 'touch' && e.button === 2) {
+        if (this.combat.weaponId !== null) {
+          this.mouseAutoFire = true;
+          this.fireWeapon();
+        }
+        return;
+      }
       if (e.pointerType !== 'touch' && e.button !== 0) return;
       this.lookPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      this.pointerDownMeta.set(e.pointerId, {
+        x: e.clientX,
+        y: e.clientY,
+        at: performance.now(),
+        pointerType: e.pointerType,
+        button: e.button,
+      });
       if (this.lookPointers.size === 2) {
         const pts = Array.from(this.lookPointers.values());
         this.lastPinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
@@ -267,18 +334,37 @@ export class DamingLakeGame {
       }
     };
     this.boundPointerUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' && e.button === 2) {
+        this.mouseAutoFire = false;
+      }
+      const meta = this.pointerDownMeta.get(e.pointerId);
+      this.pointerDownMeta.delete(e.pointerId);
+      if (
+        meta &&
+        !this.inputBlocked &&
+        meta.pointerType === 'mouse' &&
+        meta.button === 0 &&
+        this.combat.weaponId !== null &&
+        performance.now() - meta.at < 240 &&
+        Math.hypot(e.clientX - meta.x, e.clientY - meta.y) < 6
+      ) {
+        this.fireWeapon();
+      }
       this.lookPointers.delete(e.pointerId);
       if (this.lookPointers.size < 2) this.lastPinchDist = null;
     };
     this.boundBlur = () => {
       this.clearVirtualInputs();
+      this.mouseAutoFire = false;
       this.lookPointers.clear();
+      this.pointerDownMeta.clear();
       this.lastPinchDist = null;
     };
     this.boundWheel = (e: WheelEvent) => {
       this.zoomCamera(e.deltaY * 0.02);
     };
     canvas.addEventListener('pointerdown', this.boundPointerDown);
+    canvas.addEventListener('contextmenu', this.boundContextMenu);
     window.addEventListener('pointermove', this.boundPointerMove);
     window.addEventListener('pointerup', this.boundPointerUp);
     window.addEventListener('pointercancel', this.boundPointerUp);
@@ -343,6 +429,39 @@ export class DamingLakeGame {
     }
   }
 
+  setPlayerName(name: string) {
+    this.combat.setPlayerName(name);
+  }
+
+  setRenderPaused(paused: boolean) {
+    this.renderPaused = paused;
+  }
+
+  setInputBlocked(blocked: boolean) {
+    this.inputBlocked = blocked;
+    if (blocked) {
+      this.mouseAutoFire = false;
+      this.clearVirtualInputs();
+    }
+  }
+
+  setQuality(level: GraphicsQuality) {
+    this.quality = level;
+    this.applyQualitySettings(level);
+    this.bgm.playUiClick();
+    const label = level === 'low' ? '流畅省电' : level === 'medium' ? '均衡推荐' : '极致光影';
+    this.callbacks.onNotice?.('画质切换', `已切换至「${label}」画质`);
+    this.emitHud();
+  }
+
+  private applyQualitySettings(level: GraphicsQuality) {
+    const maxDpr = level === 'low' ? 1.0 : level === 'medium' ? 1.5 : 2.0;
+    this.renderer.setPixelRatio(Math.min(this.platform.getDevicePixelRatio(), maxDpr));
+    this.world.viewRadius = level === 'low' ? 3 : level === 'medium' ? 4 : 5;
+    this.sky.setQuality?.(level);
+    this.resize();
+  }
+
   setSkin(skinId: SkinId) {
     this.skinId = skinId;
     applySkinToPlayer(this.player, SKIN_MAP[skinId]);
@@ -371,10 +490,65 @@ export class DamingLakeGame {
       return;
     }
     this.boundUnlockAudio();
-    const fireYaw = this.room.currentPassengerOf ? this.player.camYaw + Math.PI : this.player.yaw;
-    const fired = this.combat.firePlayer(this.player.pos, fireYaw);
-    if (fired && this.room.active && this.combat.weaponId) {
-      this.room.sendFire(this.player.pos.x, this.player.pos.y, this.player.pos.z, fireYaw, this.combat.weaponId);
+
+    const weapon = WEAPON_MAP[this.combat.weaponId];
+    // 1. 从屏幕正中央准星发射相机射线，计算精确瞄准点（支持 AI / 飞鸟锦鲤 / 联机玩家吸附与墙体截断）
+    this.camera.getWorldDirection(this._tmpCamDir);
+    const camPos = this.camera.position;
+    let aimDist = weapon.maxRange;
+    const endX = camPos.x + this._tmpCamDir.x * aimDist;
+    const endY = camPos.y + this._tmpCamDir.y * aimDist;
+    const endZ = camPos.z + this._tmpCamDir.z * aimDist;
+
+    const wallHit = this.collider.raycastSolid(camPos.x, camPos.y, camPos.z, endX, endY, endZ, 0.55);
+    if (wallHit && wallHit.dist > 4) {
+      aimDist = Math.min(aimDist, wallHit.dist);
+    }
+    this._tmpAimTarget.copy(camPos).addScaledVector(this._tmpCamDir, aimDist);
+
+    // 优先吸附准星正对的活体目标，彻底消除第三人称视差
+    const combatSnap = this.combat.findAimTargetPoint(camPos, this._tmpCamDir, aimDist);
+    const netSnap = this.room.active
+      ? this.remotePlayers.findAimTargetPoint(
+          camPos,
+          this._tmpCamDir,
+          aimDist,
+          this.room.localTeam,
+          this.room.currentRoomMode,
+        )
+      : null;
+    if (combatSnap && (!netSnap || combatSnap.distanceToSquared(camPos) <= netSnap.distanceToSquared(camPos))) {
+      this._tmpAimTarget.copy(combatSnap);
+    } else if (netSnap) {
+      this._tmpAimTarget.copy(netSnap);
+    }
+
+    // 2. 由枪口指向准星落点，得出真实的 3D 射击方向与偏航/俯仰角
+    this._tmpMuzzle.set(this.player.pos.x, this.player.pos.y + 1.45, this.player.pos.z);
+    this._tmpAimDir.copy(this._tmpAimTarget).sub(this._tmpMuzzle);
+    if (this._tmpAimDir.lengthSq() < 1e-4) {
+      this._tmpAimDir.copy(this._tmpCamDir);
+    } else {
+      this._tmpAimDir.normalize();
+    }
+    const fireYaw = Math.atan2(this._tmpAimDir.x, this._tmpAimDir.z);
+    const firePitch = Math.asin(THREE.MathUtils.clamp(this._tmpAimDir.y, -0.92, 0.92));
+
+    // 步行/游泳/划船/跳伞开火时自动面向准星方向（不再往侧面盲射）
+    if (!this.player.inCar && !this.player.inHeli && !this.player.ridingBus && !this.player.ridingCruise) {
+      this.player.yaw = fireYaw;
+      this.player.root.rotation.y = fireYaw;
+    }
+
+    const fired = this.combat.firePlayer(this.player.pos, fireYaw, firePitch, this._tmpAimDir);
+    if (fired) {
+      this.camShake = Math.max(
+        this.camShake,
+        weapon.id === 'lotus_mortar' ? 0.16 : weapon.id === 'quehua_bow' ? 0.1 : 0.05,
+      );
+      if (this.room.active && this.combat.weaponId) {
+        this.room.sendFire(this.player.pos.x, this.player.pos.y, this.player.pos.z, fireYaw, this.combat.weaponId, firePitch);
+      }
     }
   }
 
@@ -526,6 +700,7 @@ export class DamingLakeGame {
       player: this.player,
       sky: this.sky,
       sound: this.sound,
+      createCanvas: (w: number, h: number) => this.platform.createCanvas(w, h),
     });
     const now = new Date();
     const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
@@ -682,7 +857,8 @@ export class DamingLakeGame {
   }
 
   private handleKeyDown(e: KeyboardEvent) {
-    // 避免在输入框打字时触发快捷键
+    // 弹窗/车库打开或输入框打字时拦截游戏快捷键
+    if (this.inputBlocked) return;
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
@@ -702,6 +878,9 @@ export class DamingLakeGame {
 
     if (e.code === 'KeyJ') this.fireWeapon();
     if (e.code === 'Digit0') this.setWeapon(null);
+    if (e.code === 'Digit1') this.callbacks.onWeaponSlotHotkey?.(1);
+    if (e.code === 'Digit2') this.callbacks.onWeaponSlotHotkey?.(2);
+    if (e.code === 'Digit3') this.callbacks.onWeaponSlotHotkey?.(3);
     if (e.code === 'KeyE') this.triggerEAction();
     if (e.code === 'KeyG') this.toggleHeli();
     if (e.code === 'KeyR') this.toggleCar();
@@ -856,6 +1035,7 @@ export class DamingLakeGame {
       bgmScene: this.bgm.scene,
       bgmEnabled: this.bgm.bgmEnabled,
       sfxEnabled: this.bgm.sfxEnabled,
+      quality: this.quality,
       visitedIds: Array.from(this.visitedIds),
       totalLandmarks: (LANDMARKS as any[]).length,
       scoreboard: { ...this.combat.scoreboard },
@@ -864,9 +1044,15 @@ export class DamingLakeGame {
   }
 
   private loop = () => {
-    this.rafId = requestAnimationFrame(this.loop);
+    this.rafId = this.platform.requestAnimationFrame(this.loop);
     const dt = Math.min(0.05, this.clock.getDelta());
     this.elapsed += dt;
+
+    // 3D 车库展台开启时暂停主场景重渲染（但保持联机房间心跳与同步不断线）
+    if (this.renderPaused) {
+      this.room.update(dt, this.getLocalNetState());
+      return;
+    }
 
     this.living.update(dt, this.elapsed, this.player, !!this.world.palette.showLotus);
     const inDirector = this.director.update(dt);
@@ -917,6 +1103,18 @@ export class DamingLakeGame {
         this.player.updateCamera(this.camera);
         this.world.update(this.player.pos.x, this.player.pos.z, 3);
       }
+      // 轻微开火震屏衰减
+      if (this.camShake > 0.002) {
+        this.camera.position.x += (Math.random() - 0.5) * this.camShake;
+        this.camera.position.y += (Math.random() - 0.5) * this.camShake;
+        this.camShake = Math.max(0, this.camShake - dt * 1.4);
+      } else {
+        this.camShake = 0;
+      }
+      // PC 端长按 J 键或右键持枪连发
+      if (!this.inputBlocked && this.combat.weaponId !== null && (this.keys['KeyJ'] || this.mouseAutoFire)) {
+        this.fireWeapon();
+      }
     }
     this.world.updateHeroLotuses(this.elapsed, dt, this.player);
     this.world.setNightFactor(this.sky.nightFactor);
@@ -942,7 +1140,9 @@ export class DamingLakeGame {
   };
 
   dispose() {
-    cancelAnimationFrame(this.rafId);
+    this.platform.cancelAnimationFrame(this.rafId);
+    window.removeEventListener('pointerdown', this.boundUnlockAudio);
+    window.removeEventListener('keydown', this.boundUnlockAudio);
     window.removeEventListener('keydown', this.boundKeyDown);
     window.removeEventListener('keyup', this.boundKeyUp);
     window.removeEventListener('resize', this.boundResize);
@@ -951,10 +1151,15 @@ export class DamingLakeGame {
     window.removeEventListener('pointercancel', this.boundPointerUp);
     window.removeEventListener('blur', this.boundBlur);
     this.renderer.domElement.removeEventListener('pointerdown', this.boundPointerDown);
+    this.renderer.domElement.removeEventListener('contextmenu', this.boundContextMenu);
     this.renderer.domElement.removeEventListener('wheel', this.boundWheel);
     this.room.dispose();
-    this.remotePlayers.clear();
+    this.remotePlayers.dispose();
+    this.combat.dispose();
+    this.sound.dispose?.();
     this.bgm.dispose();
+    this.sky.dispose?.();
+    disposeObject3D(this.scene, { disposeTextures: true });
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

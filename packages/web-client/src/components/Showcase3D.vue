@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import * as THREE from 'three';
 import { SKIN_MAP, WEAPON_MAP, type EquippedWeaponId, type SkinId } from '@daminghu/shared';
-import { buildSeasonalTuanMesh, buildWeaponMesh } from '@daminghu/engine-core';
+import { buildSeasonalTuanMesh, buildWeaponMesh, disposeObject3D } from '@daminghu/engine-core';
 
 const props = defineProps<{
   skinId: SkinId;
@@ -24,7 +24,9 @@ let lastX = 0;
 function rebuildAvatar() {
   if (!avatarGroup) return;
   while (avatarGroup.children.length > 0) {
-    avatarGroup.remove(avatarGroup.children[0]);
+    const child = avatarGroup.children[0];
+    avatarGroup.remove(child);
+    disposeObject3D(child);
   }
   const tuan = buildSeasonalTuanMesh(SKIN_MAP[props.skinId]);
   tuan.position.y = 0.12;
@@ -137,7 +139,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', onUp);
   window.removeEventListener('pointercancel', onUp);
   window.removeEventListener('resize', resize);
+  if (scene) disposeObject3D(scene, { disposeTextures: true });
   renderer?.dispose();
+  renderer?.domElement.remove();
 });
 </script>
 

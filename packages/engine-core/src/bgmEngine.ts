@@ -1,4 +1,5 @@
 import type { BgmScene } from '@daminghu/shared';
+import { createBrowserPlatformAdapter, type PlatformAdapter } from './platformAdapter';
 
 interface NoteStep {
   melody?: number; // Hz
@@ -131,33 +132,36 @@ export class GuofengBgmEngine {
   public sfxVolume = 0.42;
 
   private unlocked = false;
-  private onVisibilityChange: () => void;
+  private platform: PlatformAdapter;
+  private unbindVisibility: () => void;
 
-  constructor() {
-    this.onVisibilityChange = () => {
+  constructor(platform: PlatformAdapter = createBrowserPlatformAdapter()) {
+    this.platform = platform;
+    this.unbindVisibility = this.platform.onVisibilityChange((hidden) => {
       if (!this.ctx) return;
-      if (document.hidden) {
+      if (hidden) {
         this.ctx.suspend().catch(() => {});
       } else if (this.bgmEnabled || this.sfxEnabled) {
         this.ctx.resume().catch(() => {});
       }
-    };
-    if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', this.onVisibilityChange);
-    }
+    });
   }
 
-  unlock() {
+  getAudioContext(): AudioContext | null {
+    return this.ctx;
+  }
+
+  unlock(): AudioContext | null {
     if (this.unlocked) {
       if (this.ctx?.state === 'suspended') {
         this.ctx.resume().catch(() => {});
       }
-      return;
+      return this.ctx;
     }
-    const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    if (!AC) return;
+    const ctx = this.platform.createAudioContext();
+    if (!ctx) return null;
 
-    this.ctx = new AC();
+    this.ctx = ctx;
     this.bgmGain = this.ctx.createGain();
     this.bgmGain.gain.value = this.bgmEnabled ? this.bgmVolume : 0;
     this.bgmGain.connect(this.ctx.destination);
@@ -168,6 +172,7 @@ export class GuofengBgmEngine {
 
     this.unlocked = true;
     this.startLoop();
+    return this.ctx;
   }
 
   setScene(next: BgmScene) {
@@ -204,13 +209,13 @@ export class GuofengBgmEngine {
 
   private startLoop() {
     if (this.timer !== null) {
-      window.clearInterval(this.timer);
+      this.platform.clearInterval(this.timer);
       this.timer = null;
     }
     const pattern = PATTERNS[this.scene];
     const stepMs = Math.round((60 / pattern.bpm) * 500); // 八分音符步进
-    this.timer = window.setInterval(() => {
-      if (!this.ctx || !this.bgmGain || !this.bgmEnabled || document.hidden) return;
+    this.timer = this.platform.setInterval(() => {
+      if (!this.ctx || !this.bgmGain || !this.bgmEnabled || this.platform.isHidden()) return;
       const step = pattern.steps[this.stepIdx % pattern.steps.length];
       this.stepIdx++;
       const now = this.ctx.currentTime;
@@ -343,6 +348,22 @@ export class GuofengBgmEngine {
     });
   }
 
+  playPlayerHurt() {
+    if (!this.ctx || !this.sfxGain || !this.sfxEnabled) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(165, now);
+    osc.frequency.exponentialRampToValueAtTime(68, now + 0.14);
+    g.gain.setValueAtTime(0.2, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    osc.connect(g);
+    g.connect(this.sfxGain);
+    osc.start(now);
+    osc.stop(now + 0.18);
+  }
+
   playUiClick() {
     if (!this.ctx || !this.sfxGain || !this.sfxEnabled) return;
     const now = this.ctx.currentTime;
@@ -361,12 +382,11 @@ export class GuofengBgmEngine {
 
   dispose() {
     if (this.timer !== null) {
-      window.clearInterval(this.timer);
+      this.platform.clearInterval(this.timer);
       this.timer = null;
     }
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', this.onVisibilityChange);
-    }
+    this.unbindVisibility();
     this.ctx?.close().catch(() => {});
+    this.ctx = null;
   }
 }

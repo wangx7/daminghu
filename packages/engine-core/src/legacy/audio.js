@@ -3,27 +3,37 @@
 export class SoundEngine {
   constructor() {
     this.ctx = null;
+    this.ownsCtx = false;
     this.enabled = true;
     this.started = false;
     this.master = null;
+    this.noiseSource = null;
     this.engineOsc = null;
     this.engineGain = null;
     this.heliOsc = null;
     this.heliLfo = null;
     this.heliGain = null;
+    this.heliOutGain = null;
     this.windGain = null;
   }
 
-  // 首次用户点击或按键时解锁音频上下文
-  unlock() {
+  // 首次用户点击或按键时解锁音频上下文（优先复用外部共享的 AudioContext，避免多实例功耗与 iOS 兼容问题）
+  /** @param {AudioContext | null} [sharedCtx] */
+  unlock(sharedCtx = null) {
     if (this.started) {
-      if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+      if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
       return;
     }
     try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return;
-      this.ctx = new AC();
+      if (sharedCtx) {
+        this.ctx = sharedCtx;
+        this.ownsCtx = false;
+      } else {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        this.ctx = new AC();
+        this.ownsCtx = true;
+      }
       this.master = this.ctx.createGain();
       this.master.gain.value = this.enabled ? 0.45 : 0;
       this.master.connect(this.ctx.destination);
@@ -41,6 +51,7 @@ export class SoundEngine {
       const noise = this.ctx.createBufferSource();
       noise.buffer = buf;
       noise.loop = true;
+      this.noiseSource = noise;
       const lp = this.ctx.createBiquadFilter();
       lp.type = 'lowpass';
       lp.frequency.value = 380;
@@ -174,5 +185,20 @@ export class SoundEngine {
     // 湖风底噪在高空微增
     const windVol = player.pos.y > 20 ? 0.16 : 0.08;
     this.windGain.gain.setTargetAtTime(windVol, now, 0.2);
+  }
+
+  dispose() {
+    try {
+      this.noiseSource?.stop();
+      this.engineOsc?.stop();
+      this.heliOsc?.stop();
+      this.heliLfo?.stop();
+      this.master?.disconnect();
+      if (this.ownsCtx && this.ctx) {
+        this.ctx.close().catch(() => {});
+      }
+    } catch (_) {}
+    this.started = false;
+    this.ctx = null;
   }
 }

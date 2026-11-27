@@ -1918,3 +1918,238 @@ body,
     display: flex;
   }
 }
+
+/* ===== 射击体验增强：动态准星 / 命中叉 / 伤害飘字 / 受击红边 / 快捷切枪 / 冷却环 ===== */
+.hurt-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at center, transparent 54%, rgba(220, 38, 38, 0.48) 100%);
+  animation: hurtPulse 0.32s ease-out forwards;
+}
+
+@keyframes hurtPulse {
+  0% { opacity: 0.95; }
+  100% { opacity: 0; }
+}
+
+.aim-crosshair {
+  --ch-color: #7dd3fc;
+  --ch-gap: 7px;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 12;
+}
+
+.aim-crosshair.lotus_mortar {
+  --ch-color: #fda4af;
+  --ch-gap: 10px;
+}
+
+.aim-crosshair.quehua_bow {
+  --ch-color: #fde047;
+  --ch-gap: 6px;
+}
+
+.aim-crosshair.bloom {
+  --ch-gap: 13px;
+}
+
+.aim-crosshair .ch-dot {
+  position: absolute;
+  left: -2px;
+  top: -2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 6px var(--ch-color), 0 0 2px rgba(0, 0, 0, 0.9);
+}
+
+.aim-crosshair .ch-tick {
+  position: absolute;
+  background: var(--ch-color);
+  border-radius: 2px;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.85);
+  transition: transform 0.08s ease-out;
+}
+
+.aim-crosshair .ch-t,
+.aim-crosshair .ch-b {
+  width: 2px;
+  height: 8px;
+  left: -1px;
+}
+
+.aim-crosshair .ch-t {
+  top: -8px;
+  transform: translateY(calc(-1 * var(--ch-gap)));
+}
+
+.aim-crosshair .ch-b {
+  top: 0;
+  transform: translateY(var(--ch-gap));
+}
+
+.aim-crosshair .ch-l,
+.aim-crosshair .ch-r {
+  height: 2px;
+  width: 8px;
+  top: -1px;
+}
+
+.aim-crosshair .ch-l {
+  left: -8px;
+  transform: translateX(calc(-1 * var(--ch-gap)));
+}
+
+.aim-crosshair .ch-r {
+  left: 0;
+  transform: translateX(var(--ch-gap));
+}
+
+.aim-crosshair .ch-arc {
+  position: absolute;
+  left: -18px;
+  top: -18px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1.5px dashed rgba(253, 164, 175, 0.72);
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.45);
+}
+
+.hit-marker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  animation: hitPop 0.24s ease-out forwards;
+}
+
+.hit-marker.kill {
+  animation: hitPopKill 0.38s ease-out forwards;
+}
+
+.hit-marker i {
+  position: absolute;
+  left: -11px;
+  top: -1px;
+  width: 22px;
+  height: 2px;
+  border-radius: 2px;
+  background: #fde047;
+  box-shadow: 0 0 8px rgba(253, 224, 71, 0.9);
+}
+
+.hit-marker.kill i {
+  left: -14px;
+  width: 28px;
+  height: 2.5px;
+  background: #f87171;
+  box-shadow: 0 0 10px rgba(248, 113, 113, 0.95);
+}
+
+.hit-marker .hm-a {
+  transform: rotate(45deg);
+}
+
+.hit-marker .hm-b {
+  transform: rotate(-45deg);
+}
+
+.hit-dmg {
+  position: absolute;
+  left: 16px;
+  top: -24px;
+  font-size: 14px;
+  font-weight: 800;
+  color: #fde047;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+}
+
+.hit-marker.kill .hit-dmg {
+  font-size: 17px;
+  color: #fca5a5;
+}
+
+@keyframes hitPop {
+  0% { transform: scale(1.35); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0; }
+}
+
+@keyframes hitPopKill {
+  0% { transform: scale(1.65); opacity: 1; }
+  45% { transform: scale(1.1); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0; }
+}
+
+.hp-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  font-size: 12px;
+  font-weight: 700;
+  color: #86efac;
+}
+
+.hp-pill.low {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.7);
+}
+
+.quick-weapon-slots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.slot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.slot-chip b {
+  font-size: 10px;
+  color: #fde68a;
+}
+
+.slot-chip.active {
+  background: rgba(201, 59, 50, 0.88);
+  border-color: #fde68a;
+  color: #fff;
+}
+
+.slot-chip.locked {
+  opacity: 0.58;
+}
+
+.circle-btn.fire,
+.m-fire-btn {
+  position: relative;
+  overflow: hidden;
+}
+
+.circle-btn.fire.cooling::after,
+.m-fire-btn.cooling::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(rgba(10, 18, 27, 0.62) var(--cd-deg, 0deg), transparent 0deg);
+  pointer-events: none;
+}

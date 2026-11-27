@@ -64,11 +64,12 @@ function easeInOut(t) {
 }
 
 export class DirectorMode {
-  constructor({ camera, world, sky, onStateChange }) {
+  constructor({ camera, world, sky, onStateChange, onCaptionChange }) {
     this.camera = camera;
     this.world = world;
     this.sky = sky;
     this.onStateChange = onStateChange;
+    this.onCaptionChange = onCaptionChange;
 
     this.active = false;
     this.shotIdx = 0;
@@ -81,13 +82,6 @@ export class DirectorMode {
 
     this._vPos = new THREE.Vector3();
     this._vLook = new THREE.Vector3();
-
-    this.barEl = document.getElementById('director-bar');
-    this.captionEl = document.getElementById('director-caption');
-    this.recBtn = document.getElementById('btn-director-rec');
-    this.exitBtn = document.getElementById('btn-director-exit');
-
-    this.exitBtn?.addEventListener('click', () => this.stopTour());
   }
 
   toggleTour() {
@@ -101,7 +95,6 @@ export class DirectorMode {
     this.shotIdx = 0;
     this.shotTime = 0;
     this._appliedShot = -1;
-    this.barEl?.classList.add('show');
     this.onStateChange?.(true);
   }
 
@@ -109,7 +102,6 @@ export class DirectorMode {
     if (!this.active) return;
     this.active = false;
     if (this.recording) this.stopRecording();
-    this.barEl?.classList.remove('show');
     this.onStateChange?.(false);
   }
 
@@ -123,7 +115,7 @@ export class DirectorMode {
 
   startRecording(canvas) {
     if (!canvas || typeof MediaRecorder === 'undefined') {
-      if (this.captionEl) this.captionEl.textContent = '当前浏览器不支持内置录屏';
+      this.onCaptionChange?.('录屏提示', '当前浏览器不支持内置录屏');
       return false;
     }
     try {
@@ -139,19 +131,17 @@ export class DirectorMode {
       this.recorder.onstop = () => {
         const blob = new Blob(this.chunks, { type: mime });
         const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-        a.href = url;
-        a.download = `大明湖巡游_${ts}.webm`;
-        a.click();
+        if (typeof document !== 'undefined') {
+          const a = document.createElement('a');
+          const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+          a.href = url;
+          a.download = `大明湖巡游_${ts}.webm`;
+          a.click();
+        }
         setTimeout(() => URL.revokeObjectURL(url), 4000);
       };
       this.recorder.start();
       this.recording = true;
-      if (this.recBtn) {
-        this.recBtn.classList.add('recording');
-        this.recBtn.textContent = '停止录制';
-      }
       return true;
     } catch (_) {
       return false;
@@ -163,10 +153,6 @@ export class DirectorMode {
       this.recorder.stop();
     }
     this.recording = false;
-    if (this.recBtn) {
-      this.recBtn.classList.remove('recording');
-      this.recBtn.textContent = '录制视频';
-    }
   }
 
   update(dt) {
@@ -177,9 +163,7 @@ export class DirectorMode {
       this.sky.setMode(shot.timeMode);
       this.sky.setChaoranLit(shot.chaoranLit);
       this.world.primeAround(shot.from[0], shot.from[2], 3);
-      if (this.captionEl) {
-        this.captionEl.innerHTML = `<strong>${shot.title}</strong><span>${shot.subtitle}</span>`;
-      }
+      this.onCaptionChange?.(shot.title, shot.subtitle);
     }
 
     this.shotTime += dt;

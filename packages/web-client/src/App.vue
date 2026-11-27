@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
+import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { DamingLakeGame } from '@daminghu/engine-core';
+import { WEAPON_CATALOG } from '@daminghu/shared';
 import GameHud from './components/GameHud.vue';
 import { useGameStore } from './stores/gameStore';
 
@@ -10,14 +11,41 @@ const store = useGameStore();
 
 onMounted(() => {
   if (!stageRef.value) return;
-  const instance = new DamingLakeGame(stageRef.value, {
-    onHudUpdate: (snapshot) => store.updateHud(snapshot),
-    onNotice: (title, body) => store.showNotice(title, body),
-    onKillFeed: (item) => store.pushKillFeed(item),
-    onRoomUpdate: (roomSnap) => store.updateRoom(roomSnap),
-    onChatBubble: (evt) => store.pushChatBubble(evt),
-    onMatchEnd: (res) => store.setMatchResult(res),
-  });
+  const instance = new DamingLakeGame(
+    stageRef.value,
+    {
+      onHudUpdate: (snapshot) => store.updateHud(snapshot),
+      onNotice: (title, body) => store.showNotice(title, body),
+      onKillFeed: (item) => store.pushKillFeed(item),
+      onHitFeedback: (evt) => store.triggerHitFeedback(evt),
+      onPlayerDamaged: () => store.triggerPlayerHurt(),
+      onWeaponSlotHotkey: (slot) => {
+        const w = WEAPON_CATALOG.find((item) => item.slot === slot);
+        if (!w) return;
+        if (store.unlockedWeapons.includes(w.id)) {
+          game.value?.setWeapon(w.id);
+          return;
+        }
+        store.requestQuiz({
+          title: `解锁免费武器 · ${w.name}`,
+          subtitle: '答对 1 道趣味古诗/数学题即可立即上手（快捷键 1/2/3 随时切换）',
+          requiredCount: 1,
+          mandatory: false,
+          onSuccess: () => {
+            store.unlockWeapon(w.id);
+            game.value?.setWeapon(w.id);
+            store.showNotice('武器解锁', `已装备「${w.name}」，可随时按 1/2/3 切换！`);
+          },
+        });
+      },
+      onRoomUpdate: (roomSnap) => store.updateRoom(roomSnap),
+      onChatBubble: (evt) => store.pushChatBubble(evt),
+      onMatchEnd: (res) => store.setMatchResult(res),
+    },
+    {
+      playerName: store.playerNickname,
+    },
+  );
   store.landmarks = instance.getLandmarks();
   game.value = instance;
 
@@ -28,6 +56,31 @@ onMounted(() => {
     store.pendingInviteCode = inviteCode;
   }
 });
+
+watch(
+  () => store.playerNickname,
+  (name) => {
+    game.value?.setPlayerName(name);
+  },
+);
+
+// 打开弹窗/车库时拦截快捷键，打开 3D 展台时暂停主场景渲染避免双 WebGL 争抢帧率
+watch(
+  () => ({
+    garageOpen: store.garageOpen,
+    garageTab: store.garageTab,
+    landmarksOpen: store.landmarksOpen,
+    hasQuiz: !!store.activeQuiz,
+    hasPostcard: !!store.postcard,
+    hasResult: !!store.matchResult,
+  }),
+  (state) => {
+    const anyModal = state.garageOpen || state.landmarksOpen || state.hasQuiz || state.hasPostcard || state.hasResult;
+    const showcaseActive = state.garageOpen && (state.garageTab === 'skins' || state.garageTab === 'weapons');
+    game.value?.setInputBlocked(anyModal);
+    game.value?.setRenderPaused(showcaseActive);
+  },
+);
 
 onBeforeUnmount(() => {
   game.value?.dispose();
