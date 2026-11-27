@@ -65,7 +65,7 @@ function onJoyDown(e: PointerEvent) {
   e.stopPropagation();
   e.preventDefault();
   const el = joyBaseRef.value;
-  if (!el) return;
+  if (!el || joyPointerId !== null) return;
   el.setPointerCapture(e.pointerId);
   joyPointerId = e.pointerId;
   const rect = el.getBoundingClientRect();
@@ -135,6 +135,7 @@ function onPrimaryUp(e: PointerEvent) {
 function onFireDown(e: PointerEvent) {
   e.stopPropagation();
   e.preventDefault();
+  if (firePointerId !== null) return;
   const target = e.currentTarget as HTMLElement | null;
   target?.setPointerCapture?.(e.pointerId);
   firePointerId = e.pointerId;
@@ -150,10 +151,7 @@ function onFireMove(e: PointerEvent) {
   const dx = e.clientX - fireLastPos.x;
   const dy = e.clientY - fireLastPos.y;
   fireLastPos = { x: e.clientX, y: e.clientY };
-  // 按住开火键同时滑动拇指，即可边连发边平滑跟枪瞄准移动目标！
-  if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
-    props.game?.rotateCamera(dx * 0.9, dy * 0.9);
-  }
+  props.game?.rotateCamera(dx, dy);
 }
 
 function onFireUp(e?: PointerEvent) {
@@ -207,6 +205,7 @@ onBeforeUnmount(() => {
         @pointermove="onJoyMove"
         @pointerup="resetJoy"
         @pointercancel="resetJoy"
+        @lostpointercapture="resetJoy"
       >
         <div class="m-joy-ring" />
         <div
@@ -303,6 +302,7 @@ onBeforeUnmount(() => {
             @pointermove="onFireMove"
             @pointerup="onFireUp"
             @pointercancel="onFireUp"
+            @lostpointercapture="onFireUp"
           >
             <span>开火</span>
           </button>

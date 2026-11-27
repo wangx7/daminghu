@@ -1002,19 +1002,20 @@ export class TuanPlayer {
       const shift = keys['ShiftLeft'] || keys['ShiftRight'];
       const walkSpd = this.swimming ? (shift ? 11 : 7) : (shift ? 15 : 9.5);
       const len = Math.hypot(fwd, right);
+      const stride = this.armed ? Math.min(1, len) : 1;
       let mx = 0, mz = 0;
       if (len > 0.01) {
         const nf = fwd / len, nr = right / len;
-        mx = fxCam * nf + rxCam * nr;
-        mz = fzCam * nf + rzCam * nr;
+        mx = (fxCam * nf + rxCam * nr) * stride;
+        mz = (fzCam * nf + rzCam * nr) * stride;
         // 持枪战斗时始终面朝准星方向，支持左右横移走位对枪；空手漫游时面朝移动方向
         const targetYaw = this.armed ? (this.camYaw + Math.PI) : Math.atan2(mx, mz);
         let diff = targetYaw - this.yaw;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
         this.yaw += diff * Math.min(1, dt * (this.armed ? 14 : 11));
-        this.speed = THREE.MathUtils.lerp(this.speed, walkSpd, dt * 8);
-        this.walkPhase += dt * (shift ? 15 : 11);
+        this.speed = THREE.MathUtils.lerp(this.speed, walkSpd * stride, dt * 8);
+        this.walkPhase += dt * (shift ? 15 : 11) * stride;
       } else {
         if (this.armed) {
           const aimYaw = this.camYaw + Math.PI;
@@ -1231,7 +1232,7 @@ export class TuanPlayer {
     const lookForward = 80 * ab;
     camera.lookAt(
       pivotX - nx * lookForward,
-      pivotY - ny * lookForward,
+      pivotY - ny * lookForward + ab * (cy - (pivotY + ny * this.smoothCamDist)),
       pivotZ - nz * lookForward,
     );
   }

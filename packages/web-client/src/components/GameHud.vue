@@ -29,6 +29,23 @@ const props = defineProps<{
 const store = useGameStore();
 const minimapCanvas = ref<HTMLCanvasElement | null>(null);
 const bgmVol = ref(26);
+const aimSensitivity = ref(100);
+try {
+  const saved = Number(localStorage.getItem('daminghu.aimSensitivity'));
+  if (saved >= 40 && saved <= 240) aimSensitivity.value = saved;
+} catch {
+  // Storage may be disabled in private browsing.
+}
+watch(() => [props.game, aimSensitivity.value] as const, ([game, percent]) => {
+  game?.setAimSensitivity(percent / 100);
+}, { immediate: true });
+function saveAimSensitivity() {
+  try {
+    localStorage.setItem('daminghu.aimSensitivity', String(aimSensitivity.value));
+  } catch {
+    // The setting still applies to this session.
+  }
+}
 const quickChatOpen = ref(false);
 
 // QQ 飞车车库左侧 3D 展台预览状态（可先 3D 预览再决定解锁/穿戴）
@@ -580,6 +597,11 @@ function downloadPostcard() {
 
           <!-- Tab 2: 武器库 -->
           <div v-else-if="store.garageTab === 'weapons'" class="garage-body">
+            <label class="stat-row">
+              <span>持枪转向灵敏度</span>
+              <input v-model.number="aimSensitivity" type="range" min="40" max="240" step="5" @change="saveAimSensitivity" />
+              <span>{{ aimSensitivity }}%</span>
+            </label>
             <div class="card-grid">
               <div
                 class="item-card"

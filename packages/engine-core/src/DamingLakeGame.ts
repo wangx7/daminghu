@@ -109,7 +109,24 @@ export class DamingLakeGame {
   private lastSpaceDown = 0;
   private lookPointers = new Map<number, { x: number; y: number }>();
   private lastPinchDist: number | null = null;
+  private aimSensitivity = 1;
   private mouseAutoFire = false;
+  private boundMouseDown = (e: MouseEvent) => {
+    if (this.inputBlocked || this.combat.weaponId === null || e.button !== 0) return;
+    this.mouseAutoFire = true;
+    this.fireWeapon();
+    const canvas = this.renderer.domElement;
+    if (document.pointerLockElement !== canvas) {
+      try {
+        canvas.requestPointerLock?.()?.catch(() => {});
+      } catch {
+        // Continue with drag-to-look when pointer lock is unavailable.
+      }
+    }
+  };
+  private boundMouseUp = (e: MouseEvent) => {
+    if (e.button === 0) this.mouseAutoFire = false;
+  };
   private virtualFire = false;
   private lastPointerType = 'mouse';
   private lastAimTargetId: string | null = null;
@@ -308,24 +325,12 @@ export class DamingLakeGame {
     };
     this.boundPointerDown = (e: PointerEvent) => {
       if (this.inputBlocked) return;
+      if (e.pointerType === 'touch') e.preventDefault();
       this.lastPointerType = e.pointerType || 'mouse';
       if (e.pointerType !== 'touch') {
         const isArmed = this.combat.weaponId !== null;
         if (isArmed) {
-          if (e.button === 0) {
-            this.mouseAutoFire = true;
-            this.fireWeapon();
-            if (typeof document !== 'undefined' && document.pointerLockElement !== canvas) {
-              try {
-                canvas.requestPointerLock?.();
-              } catch {
-                // ignore if pointer lock is unavailable
-              }
-            }
-            this.lookPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-            return;
-          }
-          if (e.button === 2) {
+          if (e.button === 0 || e.button === 2) {
             this.lookPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
             return;
           }
@@ -388,6 +393,8 @@ export class DamingLakeGame {
       this.zoomCamera(e.deltaY * 0.02);
     };
     canvas.addEventListener('pointerdown', this.boundPointerDown);
+    canvas.addEventListener('mousedown', this.boundMouseDown);
+    window.addEventListener('mouseup', this.boundMouseUp);
     canvas.addEventListener('contextmenu', this.boundContextMenu);
     window.addEventListener('pointermove', this.boundPointerMove);
     window.addEventListener('pointerup', this.boundPointerUp);
@@ -423,9 +430,15 @@ export class DamingLakeGame {
     this.sky.resize(w, h);
   }
 
+  setAimSensitivity(multiplier: number) {
+    if (Number.isFinite(multiplier)) this.aimSensitivity = THREE.MathUtils.clamp(multiplier, 0.4, 2.4);
+  }
+
   rotateCamera(dx: number, dy: number) {
-    this.player.camYaw = (this.player.camYaw ?? this.player.yaw) - dx * 0.0055;
-    this.player.camPitch = THREE.MathUtils.clamp((this.player.camPitch ?? 0.14) + dy * 0.004, -0.55, 1.08);
+    const armed = this.combat.weaponId !== null;
+    const gain = armed ? this.aimSensitivity : 1;
+    this.player.camYaw = (this.player.camYaw ?? this.player.yaw) - dx * 0.0055 * gain;
+    this.player.camPitch = THREE.MathUtils.clamp((this.player.camPitch ?? 0.14) + dy * 0.004 * gain, armed ? -1.18 : -0.55, 1.08);
   }
 
   zoomCamera(delta: number) {
@@ -600,6 +613,7 @@ export class DamingLakeGame {
       }
       return;
     }
+    if (this.combat.cooldown > 0) return;
     this.boundUnlockAudio();
 
     const weapon = WEAPON_MAP[this.combat.weaponId];
@@ -1243,6 +1257,8 @@ export class DamingLakeGame {
     window.removeEventListener('pointerup', this.boundPointerUp);
     window.removeEventListener('pointercancel', this.boundPointerUp);
     window.removeEventListener('blur', this.boundBlur);
+    window.removeEventListener('mouseup', this.boundMouseUp);
+    this.renderer.domElement.removeEventListener('mousedown', this.boundMouseDown);
     this.renderer.domElement.removeEventListener('pointerdown', this.boundPointerDown);
     this.renderer.domElement.removeEventListener('contextmenu', this.boundContextMenu);
     this.renderer.domElement.removeEventListener('wheel', this.boundWheel);
