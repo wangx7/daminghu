@@ -304,6 +304,22 @@ body,
   transition: width 0.08s linear;
 }
 
+.vehicle-hp-bar {
+  width: 72px;
+  height: 4px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+
+.vehicle-hp-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #ef4444, #22c55e);
+  transition: width 0.12s linear;
+}
+
 /* ===== 底部中央：互动提示 ===== */
 .hud-bc {
   position: absolute;

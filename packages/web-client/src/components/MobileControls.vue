@@ -16,7 +16,11 @@ const isBoat = computed(() => store.hud.vehicle === 'boat');
 const isSwim = computed(() => store.hud.vehicle === 'swim');
 const isBus = computed(() => store.hud.vehicle === 'bus');
 const isPassiveRide = computed(
-  () => store.hud.vehicle === 'bus' || store.hud.vehicle === 'ferris' || store.hud.vehicle === 'cruise',
+  () =>
+    store.hud.isPassenger ||
+    store.hud.vehicle === 'bus' ||
+    store.hud.vehicle === 'ferris' ||
+    store.hud.vehicle === 'cruise',
 );
 const hasWeapon = computed(() => store.hud.weaponId !== null);
 

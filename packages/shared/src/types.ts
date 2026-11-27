@@ -45,6 +45,10 @@ export interface HudSnapshot {
   altitude: number;
   nitroRatio: number;
   vehicle: VehicleMode;
+  isPassenger: boolean;
+  passengerVehicle: VehicleMode | null;
+  vehicleHp: number;
+  vehicleMaxHp: number;
   statusText: string;
   nearPrompt: string;
   actionLabel: string;

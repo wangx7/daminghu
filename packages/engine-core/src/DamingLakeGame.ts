@@ -82,6 +82,7 @@ export class DamingLakeGame {
   private clock = new THREE.Clock();
   private elapsed = 0;
   private hudEmitAcc = 0;
+  private lastDriverFireTipAt = 0;
   private lastSpaceDown = 0;
   private lookPointers = new Map<number, { x: number; y: number }>();
   private lastPinchDist: number | null = null;
@@ -181,6 +182,32 @@ export class DamingLakeGame {
       onLocalRespawn: (x, z, yaw) => {
         this.player.teleport(x, z, yaw);
         this.world.primeAround(x, z, 2);
+      },
+      onPassengerSync: (info) => {
+        if (info.driverId) {
+          this.player._clearVehicles();
+          this.player.swimming = false;
+          const vLabel = info.driverVehicle === 'car' ? '敞篷跑车副驾' : info.driverVehicle === 'heli' ? '直升机舱位' : '小木船船头';
+          this.callbacks.onNotice?.('同乘成功', `已坐上${vLabel}，可 360° 自由开火赏景！`);
+        } else {
+          this.player._clearVehicles();
+          if (info.autoParachute && this.player.pos.y > 4.5) {
+            this.player.parachuting = true;
+            this.player.parachute.visible = true;
+            this.player.velY = -4.0;
+          }
+        }
+        this.emitHud();
+      },
+      onForceExitVehicle: (autoParachute, reason) => {
+        this.player._clearVehicles();
+        if (autoParachute && this.player.pos.y > 4.5) {
+          this.player.parachuting = true;
+          this.player.parachute.visible = true;
+          this.player.velY = -4.0;
+        }
+        this.callbacks.onNotice?.('载具击毁', reason);
+        this.emitHud();
       },
       onKillFeed: (item) => this.callbacks.onKillFeed?.(item),
       onChatBubble: (evt) => {
@@ -333,8 +360,18 @@ export class DamingLakeGame {
   fireWeapon() {
     if (this.combat.weaponId === null) return;
     if (this.room.isCombatMatch && !this.room.currentAlive) return;
+    // 对战模式下主驾专心驾驶不可开枪；副驾/舱门乘客可 360° 自由开火！
+    const isDriver = !this.room.currentPassengerOf && (this.player.inCar || this.player.inHeli || this.player.inBoat);
+    if (this.room.isCombatMatch && isDriver) {
+      const now = performance.now();
+      if (now - this.lastDriverFireTipAt > 2500) {
+        this.lastDriverFireTipAt = now;
+        this.callbacks.onNotice?.('载具分工', '对战中主驾需专心驾驶，副驾/乘客可 360° 自由开火！');
+      }
+      return;
+    }
     this.boundUnlockAudio();
-    const fireYaw = this.player.yaw;
+    const fireYaw = this.room.currentPassengerOf ? this.player.camYaw + Math.PI : this.player.yaw;
     const fired = this.combat.firePlayer(this.player.pos, fireYaw);
     if (fired && this.room.active && this.combat.weaponId) {
       this.room.sendFire(this.player.pos.x, this.player.pos.y, this.player.pos.z, fireYaw, this.combat.weaponId);
@@ -496,11 +533,19 @@ export class DamingLakeGame {
   }
 
   toggleCar() {
+    if (this.room.currentPassengerOf) {
+      this.room.requestLeaveVehicle(false);
+      return;
+    }
     this.player.toggleCar();
     this.emitHud();
   }
 
   toggleHeli() {
+    if (this.room.currentPassengerOf) {
+      this.room.requestLeaveVehicle(true);
+      return;
+    }
     this.player.toggleHelicopter();
     this.emitHud();
   }
@@ -534,6 +579,28 @@ export class DamingLakeGame {
 
   triggerEAction() {
     this.boundUnlockAudio();
+    // 1. 乘客状态：按 E / 点互动键下车或高空跳伞
+    if (this.room.currentPassengerOf) {
+      this.room.requestLeaveVehicle(this.room.currentPassengerVehicle === 'heli');
+      this.emitHud();
+      return;
+    }
+    // 2. 联机靠近好友/队友载具：一键上副驾 / 登飞机 / 同乘船
+    if (this.room.active && !this.player.inCar && !this.player.inHeli && !this.player.inBoat) {
+      const boardable = this.remotePlayers.findNearbyBoardableVehicle(
+        this.player.pos.x,
+        this.player.pos.y,
+        this.player.pos.z,
+        this.room.localTeam,
+        this.room.currentRoomMode,
+        this.room.inPlayingMatch,
+      );
+      if (boardable) {
+        this.room.requestBoardVehicle(boardable.driverId);
+        this.emitHud();
+        return;
+      }
+    }
     if (this.player.ridingBus) {
       this.toggleBus();
       return;
@@ -676,6 +743,33 @@ export class DamingLakeGame {
   }
 
   private resolveActionInfo(): { nearPrompt: string; actionLabel: string; actionCanAct: boolean } {
+    if (this.room.currentPassengerOf) {
+      const isHeliHigh = this.room.currentPassengerVehicle === 'heli' && this.player.pos.y > 5.5;
+      return {
+        nearPrompt: isHeliHigh
+          ? '正在搭乘直升机（可 360° 开火）· 按 E / G 或点「跳伞」高空空降！'
+          : '正在同乘好友载具（可 360° 自由开火）· 按 E 或点「下车」离开',
+        actionLabel: isHeliHigh ? '跳伞' : '下车',
+        actionCanAct: true,
+      };
+    }
+    if (this.room.active && !this.player.inCar && !this.player.inHeli && !this.player.inBoat) {
+      const boardable = this.remotePlayers.findNearbyBoardableVehicle(
+        this.player.pos.x,
+        this.player.pos.y,
+        this.player.pos.z,
+        this.room.localTeam,
+        this.room.currentRoomMode,
+        this.room.inPlayingMatch,
+      );
+      if (boardable) {
+        return {
+          nearPrompt: boardable.promptLabel,
+          actionLabel: boardable.actionLabel,
+          actionCanAct: true,
+        };
+      }
+    }
     const nearBus = !this.player.ridingBus && this.living.findNearbyBus(this.player.pos.x, this.player.pos.z, 15);
     if (nearBus) {
       return { nearPrompt: '靠近环湖观光车 · 按 E 或点击上车', actionLabel: '上车', actionCanAct: true };
@@ -740,7 +834,11 @@ export class DamingLakeGame {
       altitude: Math.max(0, Math.round(this.player.pos.y)),
       nitroRatio: (this.player.nitro ?? 75) / 100,
       vehicle: this.getVehicleMode(),
-      statusText: this.player.getStatusText?.() || '🐾 漫步中',
+      isPassenger: !!this.room.currentPassengerOf,
+      passengerVehicle: this.room.currentPassengerVehicle,
+      vehicleHp: this.room.currentVehicleHp,
+      vehicleMaxHp: this.room.currentVehicleMaxHp,
+      statusText: this.room.currentPassengerOf ? '🤝 同乘好友载具中' : this.player.getStatusText?.() || '🐾 漫步中',
       nearPrompt: actionInfo.nearPrompt,
       actionLabel: actionInfo.actionLabel,
       actionCanAct: actionInfo.actionCanAct,
@@ -773,32 +871,52 @@ export class DamingLakeGame {
     this.living.update(dt, this.elapsed, this.player, !!this.world.palette.showLotus);
     const inDirector = this.director.update(dt);
     if (!inDirector) {
-      this.player.update(dt, this.keys, this.elapsed, this.camera, this.sky.nightFactor, {
-        joyX: this.virtualInput.moveX,
-        joyY: this.virtualInput.moveZ,
-      });
-
-      // 人与人 / 人与 AI 实体防穿模推离（步行/跑车/划船均生效，且推离时严格受墙体碰撞保护）
-      if (!this.player.ridingBus && !this.player.ridingCruise && this.player.ridingFerrisCabin < 0 && !this.player.inHeli) {
-        const minSep = this.player.inCar ? 2.1 : 1.35;
-        const p1 = this.combat.resolvePlayerPushOut(this.player.pos.x, this.player.pos.y, this.player.pos.z, minSep);
-        const p2 = this.remotePlayers.resolvePlayerPushOut(this.player.pos.x, this.player.pos.y, this.player.pos.z, minSep);
-        const totalDx = p1.dx + p2.dx;
-        const totalDz = p1.dz + p2.dz;
-        const colR = this.player.inCar ? 0.72 : 0.38;
-        if (Math.abs(totalDx) > 1e-4 && !this.collider.collidesBox(this.player.pos.x + totalDx, this.player.pos.y, this.player.pos.z, colR, 1.4)) {
-          this.player.pos.x += totalDx;
-        }
-        if (Math.abs(totalDz) > 1e-4 && !this.collider.collidesBox(this.player.pos.x, this.player.pos.y, this.player.pos.z + totalDz, colR, 1.4)) {
-          this.player.pos.z += totalDz;
-        }
-        if (Math.abs(totalDx) > 1e-4 || Math.abs(totalDz) > 1e-4) {
+      const passengerDriverId = this.room.currentPassengerOf;
+      if (passengerDriverId) {
+        const seat = this.remotePlayers.getDriverSeatWorldPos(passengerDriverId, this.room.currentSeatIndex);
+        if (seat) {
+          this.player.pos.set(seat.x, seat.y, seat.z);
+          this.player.yaw = this.player.camYaw + Math.PI;
           this.player.root.position.copy(this.player.pos);
+          this.player.root.rotation.set(0, this.player.yaw, 0);
         }
-      }
+        this.player.updateCamera(this.camera);
+        this.world.update(this.player.pos.x, this.player.pos.z, 3);
+      } else {
+        this.player.update(dt, this.keys, this.elapsed, this.camera, this.sky.nightFactor, {
+          joyX: this.virtualInput.moveX,
+          joyY: this.virtualInput.moveZ,
+        });
 
-      this.player.updateCamera(this.camera);
-      this.world.update(this.player.pos.x, this.player.pos.z, 3);
+        // 人与人 / 人与 AI 实体防穿模推离（步行/跑车/划船均生效，自动忽略同车乘客/司机）
+        if (!this.player.ridingBus && !this.player.ridingCruise && this.player.ridingFerrisCabin < 0 && !this.player.inHeli) {
+          const minSep = this.player.inCar ? 2.1 : 1.35;
+          const p1 = this.combat.resolvePlayerPushOut(this.player.pos.x, this.player.pos.y, this.player.pos.z, minSep);
+          const p2 = this.remotePlayers.resolvePlayerPushOut(
+            this.player.pos.x,
+            this.player.pos.y,
+            this.player.pos.z,
+            minSep,
+            this.room.currentPassengerOf,
+            this.room.getSnapshot().localPlayerId,
+          );
+          const totalDx = p1.dx + p2.dx;
+          const totalDz = p1.dz + p2.dz;
+          const colR = this.player.inCar ? 0.72 : 0.38;
+          if (Math.abs(totalDx) > 1e-4 && !this.collider.collidesBox(this.player.pos.x + totalDx, this.player.pos.y, this.player.pos.z, colR, 1.4)) {
+            this.player.pos.x += totalDx;
+          }
+          if (Math.abs(totalDz) > 1e-4 && !this.collider.collidesBox(this.player.pos.x, this.player.pos.y, this.player.pos.z + totalDz, colR, 1.4)) {
+            this.player.pos.z += totalDz;
+          }
+          if (Math.abs(totalDx) > 1e-4 || Math.abs(totalDz) > 1e-4) {
+            this.player.root.position.copy(this.player.pos);
+          }
+        }
+
+        this.player.updateCamera(this.camera);
+        this.world.update(this.player.pos.x, this.player.pos.z, 3);
+      }
     }
     this.world.updateHeroLotuses(this.elapsed, dt, this.player);
     this.world.setNightFactor(this.sky.nightFactor);

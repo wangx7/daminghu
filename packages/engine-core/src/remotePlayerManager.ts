@@ -13,6 +13,47 @@ import {
 import { buildWeaponMesh } from './combatSystem';
 import { buildSeasonalTuanMesh } from './skinRenderer';
 
+export interface BoardableVehicleHint {
+  driverId: string;
+  driverName: string;
+  vehicle: VehicleMode;
+  actionLabel: string;
+  promptLabel: string;
+}
+
+export function computeVehicleSeatOffset(vehicle: VehicleMode, seatIndex: number): { lx: number; ly: number; lz: number } {
+  if (vehicle === 'car') {
+    return { lx: 0.72, ly: 0.75, lz: -0.05 };
+  }
+  if (vehicle === 'heli') {
+    if (seatIndex === 0) return { lx: -1.05, ly: 1.05, lz: 0.25 };
+    if (seatIndex === 1) return { lx: 1.05, ly: 1.05, lz: 0.25 };
+    return { lx: 0, ly: 1.05, lz: -1.15 };
+  }
+  if (vehicle === 'boat') {
+    return { lx: 0, ly: 0.48, lz: 1.25 };
+  }
+  return { lx: 0, ly: 0, lz: 0 };
+}
+
+export function computeSeatWorldPos(
+  driverX: number,
+  driverY: number,
+  driverZ: number,
+  driverYaw: number,
+  vehicle: VehicleMode,
+  seatIndex: number,
+): { x: number; y: number; z: number } {
+  const { lx, ly, lz } = computeVehicleSeatOffset(vehicle, seatIndex);
+  const sin = Math.sin(driverYaw);
+  const cos = Math.cos(driverYaw);
+  return {
+    x: driverX + lx * cos + lz * sin,
+    y: driverY + ly,
+    z: driverZ - lx * sin + lz * cos,
+  };
+}
+
 interface RemoteAvatar {
   id: string;
   root: THREE.Group;
@@ -36,6 +77,10 @@ interface RemoteAvatar {
   maxHp: number;
   alive: boolean;
   vehicle: VehicleMode;
+  passengerOf: string | null;
+  seatIndex: number;
+  vehicleHp: number;
+  vehicleMaxHp: number;
   chatText: string;
   chatExpireAt: number;
 
@@ -210,6 +255,10 @@ export class RemotePlayerManager {
       maxHp: snap.maxHp,
       alive: snap.alive,
       vehicle: snap.vehicle,
+      passengerOf: snap.passengerOf,
+      seatIndex: snap.seatIndex,
+      vehicleHp: snap.vehicleHp,
+      vehicleMaxHp: snap.vehicleMaxHp,
       chatText: '',
       chatExpireAt: 0,
       targetPos: new THREE.Vector3(snap.x, snap.y, snap.z),
@@ -298,6 +347,10 @@ export class RemotePlayerManager {
       a.alive = snap.alive;
       a.root.visible = snap.alive;
       a.vehicle = snap.vehicle;
+      a.passengerOf = snap.passengerOf;
+      a.seatIndex = snap.seatIndex;
+      a.vehicleHp = snap.vehicleHp;
+      a.vehicleMaxHp = snap.vehicleMaxHp;
 
       if (a.skinId !== snap.skinId) {
         a.skinId = snap.skinId;
@@ -369,12 +422,71 @@ export class RemotePlayerManager {
     return { x: a.root.position.x, y: a.root.position.y, z: a.root.position.z };
   }
 
-  // 防止本地玩家与联机好友/远端 AI 角色互相穿模（圆柱推离）
-  resolvePlayerPushOut(px: number, py: number, pz: number, minDist = 1.35): { dx: number; dz: number } {
+  getDriverSeatWorldPos(driverId: string, seatIndex: number): { x: number; y: number; z: number; yaw: number; vehicle: VehicleMode } | null {
+    const drv = this.avatars.get(driverId);
+    if (!drv || !drv.alive) return null;
+    const pos = computeSeatWorldPos(
+      drv.root.position.x,
+      drv.root.position.y,
+      drv.root.position.z,
+      drv.root.rotation.y,
+      drv.vehicle,
+      seatIndex,
+    );
+    return { ...pos, yaw: drv.root.rotation.y, vehicle: drv.vehicle };
+  }
+
+  // 检测 9.5m 内可搭乘的好友/队友载具（跑车 / 直升机 / 小木船）
+  findNearbyBoardableVehicle(
+    px: number,
+    py: number,
+    pz: number,
+    localTeam: TeamId,
+    roomMode: 'coop_roam' | 'ffa' | 'team',
+    isPlaying: boolean,
+  ): BoardableVehicleHint | null {
+    let best: BoardableVehicleHint | null = null;
+    let bestD = 9.5;
+    for (const a of this.avatars.values()) {
+      if (!a.alive) continue;
+      if (a.vehicle !== 'car' && a.vehicle !== 'heli' && a.vehicle !== 'boat') continue;
+      if (isPlaying) {
+        if (roomMode === 'ffa') continue;
+        if (roomMode === 'team' && a.team !== localTeam) continue;
+      }
+      if (Math.abs(py - a.root.position.y) > 5.0) continue;
+      const d = Math.hypot(px - a.root.position.x, pz - a.root.position.z);
+      if (d < bestD) {
+        bestD = d;
+        const actionLabel = a.vehicle === 'car' ? '上副驾' : a.vehicle === 'heli' ? '登飞机' : '同乘船';
+        const vName = a.vehicle === 'car' ? '敞篷跑车' : a.vehicle === 'heli' ? '直升机' : '小木船';
+        best = {
+          driverId: a.id,
+          driverName: a.name,
+          vehicle: a.vehicle,
+          actionLabel,
+          promptLabel: `按 E 或点「${actionLabel}」搭乘 ${a.name} 的${vName}（副驾可自由开火）`,
+        };
+      }
+    }
+    return best;
+  }
+
+  // 防止本地玩家与联机好友/远端 AI 角色互相穿模（自动忽略同车司机与本车乘客）
+  resolvePlayerPushOut(
+    px: number,
+    py: number,
+    pz: number,
+    minDist = 1.35,
+    ignoreDriverId: string | null = null,
+    localPlayerId = '',
+  ): { dx: number; dz: number } {
     let pushX = 0;
     let pushZ = 0;
     for (const a of this.avatars.values()) {
       if (!a.alive) continue;
+      if (ignoreDriverId && a.id === ignoreDriverId) continue;
+      if (localPlayerId && a.passengerOf === localPlayerId) continue;
       if (Math.abs(py - a.root.position.y) > 2.2) continue;
       const dx = px - a.root.position.x;
       const dz = pz - a.root.position.z;

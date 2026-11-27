@@ -368,14 +368,17 @@ function downloadPostcard() {
       </div>
     </div>
 
-    <!-- 左下角（手机端自动移至左上角下方避开摇杆）：乘坐载具时显示速度/海拔/氮气仪表 -->
-    <div v-if="store.hud.vehicle !== 'foot'" class="hud-bl">
+    <!-- 左下角（手机端自动移至左上角下方避开摇杆）：乘坐载具/同乘时显示速度、海拔、氮气与载具耐久 -->
+    <div v-if="store.hud.vehicle !== 'foot' || store.hud.isPassenger" class="hud-bl">
       <div class="vehicle-badge">
         <span class="speed-num">{{ store.hud.speedKmh }}</span>
         <div class="vehicle-meta">
-          <span>KM/H · {{ store.hud.altitude }}m</span>
+          <span>{{ store.hud.isPassenger ? '副驾/舱位' : `${store.hud.altitude}m` }} · KM/H</span>
           <div v-if="store.hud.vehicle === 'car'" class="nitro-mini-bar">
             <i :style="{ width: `${Math.round(Math.max(0, Math.min(1, store.hud.nitroRatio)) * 100)}%` }" />
+          </div>
+          <div v-if="isOnlinePlaying && store.room.config.mode !== 'coop_roam' && store.hud.vehicleMaxHp > 0" class="vehicle-hp-bar">
+            <i :style="{ width: `${Math.round(Math.max(0, Math.min(1, store.hud.vehicleHp / store.hud.vehicleMaxHp)) * 100)}%` }" />
           </div>
         </div>
       </div>
@@ -730,6 +733,23 @@ function downloadPostcard() {
                 <div class="btn-wrap" style="margin-top: 4px">
                   <button class="guofeng-btn" @click="store.garageTab = 'scene'">切换景致与丝竹</button>
                   <button class="guofeng-btn" @click="takePostcard">拍一张明信片</button>
+                </div>
+              </div>
+
+              <div class="guide-card">
+                <div class="guide-head">
+                  <span class="guide-num">06</span>
+                  <strong>多人载具同乘 · 副驾射击 · 高空空降</strong>
+                </div>
+                <ul class="guide-list">
+                  <li><b>一键搭顺风车</b>：在「自由同游」或「团队对抗」中靠近好友/队友的跑车、直升机或小木船，按 <kbd>E</kbd> 或点手机端绿色互动键（上副驾 / 登飞机 / 同乘船）即可同乘！</li>
+                  <li><b>跑车双座（车神 + 移动炮台）</b>：主驾专心漂移加速，副驾可 <b>360° 探身开火</b>（对战时跑车耐久 180 HP，打爆熄火弹出）。</li>
+                  <li><b>直升机 4 座（空运 + 伞兵空降）</b>：机长负责飞行盘旋，最多 3 名乘客可空中舱门压制，并随时按 <kbd>G</kbd>/<kbd>E</kbd> 或点「跳伞」<b>一键高空开伞空降偷袭</b>！</li>
+                  <li><b>防空与安全迫降</b>：<b>鹊华长弓</b>对空中直升机造成 <b>1.5 倍防空伤害</b>；直升机（140 HP）被击毁时全员<b>自动张开彩色降落伞迫降</b>，绝不直接摔死！</li>
+                  <li><b>双人小木船（湖面水战）</b>：一人划桨穿梭荷花荡，一人坐船头赏景或打荷花水炮；自由同游模式下全部载具免疫伤害，纯享兜风！</li>
+                </ul>
+                <div class="btn-wrap" style="margin-top: 4px">
+                  <button class="primary-btn" @click="store.garageTab = 'multiplayer'">去联机大厅开黑</button>
                 </div>
               </div>
             </div>

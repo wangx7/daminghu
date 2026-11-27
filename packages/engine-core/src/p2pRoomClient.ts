@@ -31,15 +31,45 @@ export interface LocalPlayerNetState {
   weaponId: EquippedWeaponId;
 }
 
+export interface PassengerSyncInfo {
+  driverId: string | null;
+  seatIndex: number;
+  driverVehicle: VehicleMode | null;
+  autoParachute: boolean;
+  ejectReason?: string;
+}
+
 export interface P2PRoomCallbacks {
   onRoomUpdate?: (snapshot: RoomSnapshot) => void;
   onWorldSnapshot?: (entities: NetEntitySnapshot[], localPlayerId: string) => void;
   onProjectileFx?: (shooterId: string, x: number, y: number, z: number, yaw: number, weaponId: WeaponId) => void;
   onLocalRespawn?: (x: number, z: number, yaw: number) => void;
+  onPassengerSync?: (info: PassengerSyncInfo) => void;
+  onForceExitVehicle?: (autoParachute: boolean, reason: string) => void;
   onKillFeed?: (item: KillFeedItem) => void;
   onChatBubble?: (event: ChatBubbleEvent) => void;
   onMatchEnd?: (result: MatchResultSummary) => void;
   onNotice?: (title: string, body: string) => void;
+}
+
+function getVehicleMaxHp(v: VehicleMode): number {
+  if (v === 'car') return 180;
+  if (v === 'heli') return 140;
+  if (v === 'boat') return 120;
+  return 0;
+}
+
+function getVehicleMaxPassengers(v: VehicleMode): number {
+  if (v === 'heli') return 3;
+  if (v === 'car' || v === 'boat') return 1;
+  return 0;
+}
+
+function getVehicleCnName(v: VehicleMode): string {
+  if (v === 'car') return '敞篷跑车';
+  if (v === 'heli') return '体素直升机';
+  if (v === 'boat') return '双人小木船';
+  return '载具';
 }
 
 interface HostEntity extends NetEntitySnapshot {
@@ -119,6 +149,11 @@ export class P2PRoomClient {
   private guestMembers: RoomMember[] = [];
   private localHp = 100;
   private localAlive = true;
+  private localVehicleHp = 0;
+  private localVehicleMaxHp = 0;
+  private localPassengerOf: string | null = null;
+  private localSeatIndex = -1;
+  private localPassengerVehicle: VehicleMode | null = null;
 
   private syncAcc = 0;
   private msgSeq = 1;
@@ -147,6 +182,35 @@ export class P2PRoomClient {
 
   get currentAlive(): boolean {
     return this.localAlive;
+  }
+
+  get currentVehicleHp(): number {
+    return this.localVehicleHp;
+  }
+
+  get currentVehicleMaxHp(): number {
+    return this.localVehicleMaxHp;
+  }
+
+  get currentPassengerOf(): string | null {
+    return this.localPassengerOf;
+  }
+
+  get currentSeatIndex(): number {
+    return this.localSeatIndex;
+  }
+
+  get currentPassengerVehicle(): VehicleMode | null {
+    return this.localPassengerVehicle;
+  }
+
+  get currentRoomMode() {
+    return this.config.mode;
+  }
+
+  get localTeam(): TeamId {
+    if (this.isHost) return this.hostEntities.get(this.localPlayerId)?.team ?? 'none';
+    return this.guestMembers.find((m) => m.id === this.localPlayerId)?.team ?? 'none';
   }
 
   getSnapshot(): RoomSnapshot {
@@ -237,6 +301,10 @@ export class P2PRoomClient {
         z: localState.z,
         yaw: localState.yaw,
         vehicle: localState.vehicle,
+        passengerOf: null,
+        seatIndex: -1,
+        vehicleHp: getVehicleMaxHp(localState.vehicle),
+        vehicleMaxHp: getVehicleMaxHp(localState.vehicle),
         skinId: localState.skinId,
         weaponId: localState.weaponId,
         hp: 100,
@@ -280,6 +348,7 @@ export class P2PRoomClient {
       const entity = this.hostEntities.get(guestId);
       this.guestConns.delete(guestId);
       if (entity) {
+        this.ejectPassengersOf(guestId, entity.vehicle === 'heli' && entity.y > 5.5, '司机已离开房间');
         this.hostEntities.delete(guestId);
         this.callbacks.onNotice?.('好友离开', `「${entity.name}」已退出房间`);
         this.broadcastRoomSync();
@@ -397,6 +466,12 @@ export class P2PRoomClient {
     this.errorMessage = '';
     this.localHp = 100;
     this.localAlive = true;
+    this.localVehicleHp = 0;
+    this.localVehicleMaxHp = 0;
+    this.localPassengerOf = null;
+    this.localSeatIndex = -1;
+    this.localPassengerVehicle = null;
+    this.callbacks.onPassengerSync?.({ driverId: null, seatIndex: -1, driverVehicle: null, autoParachute: false });
     this.callbacks.onWorldSnapshot?.([], this.localPlayerId);
     this.emitRoom();
   }
@@ -561,6 +636,10 @@ export class P2PRoomClient {
       z: sp.z,
       yaw: sp.yaw,
       vehicle: 'foot',
+      passengerOf: null,
+      seatIndex: -1,
+      vehicleHp: 0,
+      vehicleMaxHp: 0,
       skinId: BOT_SKINS[idx % BOT_SKINS.length],
       weaponId: idx % 3 === 0 ? 'lotus_mortar' : idx % 3 === 1 ? 'quehua_bow' : 'spring_blaster',
       hp: 100,
@@ -595,6 +674,111 @@ export class P2PRoomClient {
       this.broadcastChat(this.localPlayerId, this.localPlayerName, clean, team);
     } else {
       this.sendToHost({ type: 'chat', text: clean });
+    }
+  }
+
+  requestBoardVehicle(driverId: string) {
+    if (this.status !== 'connected' || !this.localAlive) return;
+    if (this.isHost) {
+      this.processBoardVehicle(this.localPlayerId, driverId);
+    } else {
+      this.sendToHost({ type: 'board_vehicle', driverId });
+    }
+  }
+
+  requestLeaveVehicle(wantParachute = false) {
+    if (this.status !== 'connected' || !this.localPassengerOf) return;
+    if (this.isHost) {
+      this.processLeaveVehicle(this.localPlayerId, wantParachute);
+    } else {
+      this.sendToHost({ type: 'leave_vehicle', wantParachute });
+    }
+  }
+
+  private emitPassengerSync(
+    targetId: string,
+    driverId: string | null,
+    seatIndex: number,
+    driverVehicle: VehicleMode | null,
+    autoParachute: boolean,
+    ejectReason?: string,
+  ) {
+    if (targetId === this.localPlayerId) {
+      this.localPassengerOf = driverId;
+      this.localSeatIndex = seatIndex;
+      this.localPassengerVehicle = driverVehicle;
+      this.callbacks.onPassengerSync?.({ driverId, seatIndex, driverVehicle, autoParachute, ejectReason });
+      if (ejectReason) this.callbacks.onNotice?.('载具提示', ejectReason);
+    } else {
+      const conn = this.guestConns.get(targetId);
+      if (conn?.open) {
+        conn.send({
+          type: 'passenger_sync',
+          targetId,
+          driverId,
+          seatIndex,
+          driverVehicle,
+          autoParachute,
+          ejectReason,
+        } satisfies HostToClientMsg);
+      }
+    }
+  }
+
+  private processBoardVehicle(passengerId: string, driverId: string) {
+    const passenger = this.hostEntities.get(passengerId);
+    const driver = this.hostEntities.get(driverId);
+    if (!passenger || !driver || !passenger.alive || !driver.alive) return;
+    if (passengerId === driverId) return;
+
+    const maxSeats = getVehicleMaxPassengers(driver.vehicle);
+    if (maxSeats <= 0) return;
+
+    // 对战权限：团队战仅允许上队友车；个人混战禁止上对手车；自由同游/大厅不限
+    if (this.phase === 'playing') {
+      if (this.config.mode === 'ffa') return;
+      if (this.config.mode === 'team' && passenger.team !== driver.team) return;
+    }
+
+    // 寻找空座位
+    const occupied = new Set<number>();
+    for (const e of this.hostEntities.values()) {
+      if (e.passengerOf === driverId && e.seatIndex >= 0) occupied.add(e.seatIndex);
+    }
+    let freeSeat = -1;
+    for (let s = 0; s < maxSeats; s++) {
+      if (!occupied.has(s)) {
+        freeSeat = s;
+        break;
+      }
+    }
+    if (freeSeat < 0) return;
+
+    passenger.passengerOf = driverId;
+    passenger.seatIndex = freeSeat;
+    passenger.vehicle = 'foot';
+    this.emitPassengerSync(passengerId, driverId, freeSeat, driver.vehicle, false);
+    this.broadcastWorldSnapshot();
+  }
+
+  private processLeaveVehicle(passengerId: string, wantParachute = false) {
+    const passenger = this.hostEntities.get(passengerId);
+    if (!passenger || !passenger.passengerOf) return;
+    const driver = this.hostEntities.get(passenger.passengerOf);
+    const autoParachute = !!(driver && driver.vehicle === 'heli' && (driver.y > 5.5 || wantParachute));
+    passenger.passengerOf = null;
+    passenger.seatIndex = -1;
+    this.emitPassengerSync(passengerId, null, -1, null, autoParachute);
+    this.broadcastWorldSnapshot();
+  }
+
+  private ejectPassengersOf(driverId: string, autoParachute: boolean, reason?: string) {
+    for (const e of this.hostEntities.values()) {
+      if (e.passengerOf === driverId) {
+        e.passengerOf = null;
+        e.seatIndex = -1;
+        this.emitPassengerSync(e.id, null, -1, null, autoParachute, reason);
+      }
     }
   }
 
@@ -655,6 +839,10 @@ export class P2PRoomClient {
         z: sp.z,
         yaw: sp.yaw,
         vehicle: 'foot',
+        passengerOf: null,
+        seatIndex: -1,
+        vehicleHp: 0,
+        vehicleMaxHp: 0,
         skinId: msg.skinId,
         weaponId: msg.weaponId,
         hp: 100,
@@ -695,7 +883,16 @@ export class P2PRoomClient {
         entity.z = msg.z;
         entity.yaw = msg.yaw;
       }
+      const prevVehicle = entity.vehicle;
       entity.vehicle = msg.vehicle;
+      if (prevVehicle !== msg.vehicle) {
+        const newMax = getVehicleMaxHp(msg.vehicle);
+        entity.vehicleMaxHp = newMax;
+        entity.vehicleHp = newMax;
+        if (getVehicleMaxPassengers(prevVehicle) > 0 && getVehicleMaxPassengers(msg.vehicle) === 0) {
+          this.ejectPassengersOf(guestId, prevVehicle === 'heli' && entity.y > 5.5, '司机已离开载具');
+        }
+      }
       entity.skinId = msg.skinId;
       entity.weaponId = msg.weaponId;
     } else if (msg.type === 'fire') {
@@ -708,6 +905,10 @@ export class P2PRoomClient {
       this.emitRoom();
     } else if (msg.type === 'chat') {
       this.broadcastChat(guestId, entity.name, msg.text.slice(0, 24), entity.team);
+    } else if (msg.type === 'board_vehicle') {
+      this.processBoardVehicle(guestId, msg.driverId);
+    } else if (msg.type === 'leave_vehicle') {
+      this.processLeaveVehicle(guestId, !!msg.wantParachute);
     }
   }
 
@@ -740,10 +941,32 @@ export class P2PRoomClient {
       if (me) {
         this.localHp = me.hp;
         this.localAlive = me.alive;
+        if (me.passengerOf) {
+          const drv = msg.entities.find((e) => e.id === me.passengerOf);
+          this.localVehicleHp = drv?.vehicleHp ?? 0;
+          this.localVehicleMaxHp = drv?.vehicleMaxHp ?? 0;
+        } else {
+          this.localVehicleHp = me.vehicleHp;
+          this.localVehicleMaxHp = me.vehicleMaxHp;
+        }
       }
       this.callbacks.onWorldSnapshot?.(msg.entities, this.localPlayerId);
       if (Math.ceil(this.timeRemainingSec) !== prevSec || this.redScore * 1000 + this.blueScore !== prevScore) {
         this.emitRoom();
+      }
+    } else if (msg.type === 'passenger_sync') {
+      if (msg.targetId === this.localPlayerId) {
+        this.localPassengerOf = msg.driverId;
+        this.localSeatIndex = msg.seatIndex;
+        this.localPassengerVehicle = msg.driverVehicle;
+        this.callbacks.onPassengerSync?.({
+          driverId: msg.driverId,
+          seatIndex: msg.seatIndex,
+          driverVehicle: msg.driverVehicle,
+          autoParachute: msg.autoParachute,
+          ejectReason: msg.ejectReason,
+        });
+        if (msg.ejectReason) this.callbacks.onNotice?.('载具提示', msg.ejectReason);
       }
     } else if (msg.type === 'projectile_fx') {
       if (msg.shooterId !== this.localPlayerId) {
@@ -836,7 +1059,37 @@ export class P2PRoomClient {
       const perpSq = dx * dx + dz * dz - proj * proj;
       const dy = Math.abs(target.y - y);
       if (perpSq <= hitRadius * hitRadius && dy <= 5.0) {
-        this.applyDamage(shooter, target, weapon.damage, weapon.name);
+        // 对战中击中载具司机时优先扣减载具耐久（鹊华长弓对直升机 1.5 倍防空伤害！）
+        if (target.vehicleMaxHp > 0 && target.vehicleHp > 0 && getVehicleMaxPassengers(target.vehicle) > 0) {
+          const antiAir = weaponId === 'quehua_bow' && target.vehicle === 'heli' ? 1.5 : 1.0;
+          const vDmg = Math.round(weapon.damage * antiAir);
+          target.vehicleHp = Math.max(0, target.vehicleHp - vDmg);
+          if (target.id === this.localPlayerId) this.localVehicleHp = target.vehicleHp;
+          if (target.vehicleHp <= 0) {
+            const vName = getVehicleCnName(target.vehicle);
+            const autoPara = target.vehicle === 'heli' && target.y > 5.5;
+            const feedText = `🔥 ${shooter.name} 用 ${weapon.name} 击毁了 ${target.name} 的${vName}！`;
+            this.callbacks.onKillFeed?.({ id: this.msgSeq++, text: feedText, team: shooter.team, timestamp: Date.now() });
+            this.broadcastToGuests({ type: 'kill_feed', text: feedText, team: shooter.team });
+            this.ejectPassengersOf(target.id, autoPara, `${vName}被击毁，已安全弹出！`);
+            target.vehicle = autoPara ? 'parachute' : 'foot';
+            target.vehicleMaxHp = 0;
+            if (target.id === this.localPlayerId) {
+              this.localVehicleHp = 0;
+              this.localVehicleMaxHp = 0;
+              this.callbacks.onForceExitVehicle?.(autoPara, `${vName}被击毁，${autoPara ? '已自动张开降落伞迫降！' : '已安全跳车！'}`);
+            } else if (!target.isBot) {
+              this.emitPassengerSync(target.id, null, -1, null, autoPara, `${vName}被击毁！`);
+            }
+            // 载具爆破附带轻微震荡扣血（不直接秒杀）
+            if (target.hp > 25) {
+              target.hp -= 20;
+              if (target.id === this.localPlayerId) this.localHp = target.hp;
+            }
+          }
+        } else {
+          this.applyDamage(shooter, target, weapon.damage, weapon.name);
+        }
         if (weapon.splashRadius <= 0) break;
       }
     }
@@ -1009,7 +1262,22 @@ export class P2PRoomClient {
           hostEntity.z = localState.z;
           hostEntity.yaw = localState.yaw;
         }
+        const prevVehicle = hostEntity.vehicle;
         hostEntity.vehicle = localState.vehicle;
+        if (prevVehicle !== localState.vehicle) {
+          const newMax = getVehicleMaxHp(localState.vehicle);
+          hostEntity.vehicleMaxHp = newMax;
+          hostEntity.vehicleHp = newMax;
+          this.localVehicleMaxHp = newMax;
+          this.localVehicleHp = newMax;
+          if (getVehicleMaxPassengers(prevVehicle) > 0 && getVehicleMaxPassengers(localState.vehicle) === 0) {
+            this.ejectPassengersOf(this.localPlayerId, prevVehicle === 'heli' && hostEntity.y > 5.5, '房主已离开载具');
+          }
+        } else if (hostEntity.passengerOf) {
+          const drv = this.hostEntities.get(hostEntity.passengerOf);
+          this.localVehicleHp = drv?.vehicleHp ?? 0;
+          this.localVehicleMaxHp = drv?.vehicleMaxHp ?? 0;
+        }
         hostEntity.skinId = localState.skinId;
         hostEntity.weaponId = localState.weaponId;
       }
@@ -1088,6 +1356,10 @@ export class P2PRoomClient {
       z: Number(e.z.toFixed(2)),
       yaw: Number(e.yaw.toFixed(3)),
       vehicle: e.vehicle,
+      passengerOf: e.passengerOf,
+      seatIndex: e.seatIndex,
+      vehicleHp: Math.round(e.vehicleHp),
+      vehicleMaxHp: e.vehicleMaxHp,
       skinId: e.skinId,
       weaponId: e.weaponId,
       hp: Math.round(e.hp),

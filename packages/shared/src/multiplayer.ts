@@ -37,6 +37,10 @@ export interface NetEntitySnapshot {
   z: number;
   yaw: number;
   vehicle: VehicleMode;
+  passengerOf: string | null;
+  seatIndex: number;
+  vehicleHp: number;
+  vehicleMaxHp: number;
   skinId: SkinId;
   weaponId: EquippedWeaponId;
   hp: number;
@@ -137,6 +141,14 @@ export type ClientToHostMsg =
   | {
       type: 'chat';
       text: string;
+    }
+  | {
+      type: 'board_vehicle';
+      driverId: string;
+    }
+  | {
+      type: 'leave_vehicle';
+      wantParachute?: boolean;
     };
 
 export type HostToClientMsg =
@@ -199,4 +211,13 @@ export type HostToClientMsg =
   | {
       type: 'room_closed';
       reason: string;
+    }
+  | {
+      type: 'passenger_sync';
+      targetId: string;
+      driverId: string | null;
+      seatIndex: number;
+      driverVehicle: VehicleMode | null;
+      autoParachute: boolean;
+      ejectReason?: string;
     };
