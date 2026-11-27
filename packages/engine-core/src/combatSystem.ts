@@ -198,11 +198,13 @@ export class CombatSystem {
   };
 
   private feedSeq = 1;
+  private collider: any;
   public onKillFeed?: (item: KillFeedItem) => void;
 
-  constructor(scene: THREE.Scene, bgm: GuofengBgmEngine) {
+  constructor(scene: THREE.Scene, bgm: GuofengBgmEngine, collider?: any) {
     this.scene = scene;
     this.bgm = bgm;
+    this.collider = collider ?? null;
     this.spawnWildlife(-210, 210);
   }
 
@@ -330,10 +332,34 @@ export class CombatSystem {
     }
   }
 
+  private getTerrainHeight(x: number, z: number): number {
+    const t = sampleTerrain(x, z);
+    return typeof t === 'number' ? t : (t?.height ?? 1.2);
+  }
+
+  private findSafeBotSpot(x: number, z: number): { x: number; y: number; z: number } {
+    const tryPos = (cx: number, cz: number) => {
+      const terr = sampleTerrain(cx, cz);
+      if (terr?.isWater) return null;
+      const ground = this.collider ? Math.max(terr.height, this.collider.findGroundBelow(cx, cz, 12)) : Math.max(1.2, terr.height);
+      if (this.collider && this.collider.collidesBox(cx, ground + 0.05, cz, 0.55, 1.75)) return null;
+      return { x: cx, y: Math.max(1.2, ground), z: cz };
+    };
+    const direct = tryPos(x, z);
+    if (direct) return direct;
+    for (let r = 3; r <= 24; r += 3) {
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+        const cand = tryPos(x + Math.cos(a) * r, z + Math.sin(a) * r);
+        if (cand) return cand;
+      }
+    }
+    return { x, y: Math.max(1.2, this.getTerrainHeight(x, z)), z };
+  }
+
   private spawnBot(id: string, name: string, team: TeamId, x: number, z: number, phase: number) {
-    const y = Math.max(1.2, sampleTerrain(x, z));
+    const spot = this.findSafeBotSpot(x, z);
     const { root, hpBarFill } = buildBotMesh(team);
-    root.position.set(x, y, z);
+    root.position.set(spot.x, spot.y, spot.z);
     this.scene.add(root);
     this.bots.push({
       id,
@@ -341,8 +367,8 @@ export class CombatSystem {
       team,
       root,
       hpBarFill,
-      pos: new THREE.Vector3(x, y, z),
-      homePos: new THREE.Vector3(x, y, z),
+      pos: new THREE.Vector3(spot.x, spot.y, spot.z),
+      homePos: new THREE.Vector3(spot.x, spot.y, spot.z),
       yaw: 0,
       hp: 100,
       maxHp: 100,
@@ -351,6 +377,27 @@ export class CombatSystem {
       fireCooldown: 1.4 + Math.random() * 1.4,
       patrolPhase: phase,
     });
+  }
+
+  // 防止玩家与 AI 角色互相穿模（圆柱推离）
+  resolvePlayerPushOut(px: number, py: number, pz: number, minDist = 1.35): { dx: number; dz: number } {
+    let pushX = 0;
+    let pushZ = 0;
+    for (const bot of this.bots) {
+      if (!bot.alive) continue;
+      if (Math.abs(py - bot.pos.y) > 2.1) continue;
+      const dx = px - bot.pos.x;
+      const dz = pz - bot.pos.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 0.001 && dist < minDist) {
+        const overlap = minDist - dist;
+        pushX += (dx / dist) * overlap;
+        pushZ += (dz / dist) * overlap;
+      } else if (dist <= 0.001) {
+        pushX += minDist * 0.5;
+      }
+    }
+    return { dx: pushX, dz: pushZ };
   }
 
   private clearBots() {
@@ -503,9 +550,29 @@ export class CombatSystem {
       const targetZ = bot.homePos.z + Math.cos(t * 0.8) * 6.5;
       const dx = targetX - bot.pos.x;
       const dz = targetZ - bot.pos.z;
-      bot.pos.x += dx * Math.min(1, dt * 1.6);
-      bot.pos.z += dz * Math.min(1, dt * 1.6);
-      bot.pos.y = Math.max(1.2, sampleTerrain(bot.pos.x, bot.pos.z));
+      const stepX = dx * Math.min(1, dt * 1.6);
+      const stepZ = dz * Math.min(1, dt * 1.6);
+
+      // 分轴实体碰撞检测：AI 绝不穿墙/穿建筑/穿树，且不与玩家或同伴重叠
+      const canStand = (cx: number, cz: number) => {
+        const terr = sampleTerrain(cx, cz);
+        if (terr?.isWater) return false;
+        const gy = Math.max(1.2, terr.height);
+        if (this.collider && this.collider.collidesBox(cx, gy + 0.05, cz, 0.52, 1.75)) return false;
+        if (Math.abs(playerPos.y - gy) < 2.1 && Math.hypot(cx - playerPos.x, cz - playerPos.z) < 1.25) return false;
+        for (const other of this.bots) {
+          if (other === bot || !other.alive) continue;
+          if (Math.hypot(cx - other.pos.x, cz - other.pos.z) < 1.35) return false;
+        }
+        return true;
+      };
+      if (Math.abs(stepX) > 1e-4 && canStand(bot.pos.x + stepX, bot.pos.z)) {
+        bot.pos.x += stepX;
+      }
+      if (Math.abs(stepZ) > 1e-4 && canStand(bot.pos.x, bot.pos.z + stepZ)) {
+        bot.pos.z += stepZ;
+      }
+      bot.pos.y = Math.max(1.2, this.getTerrainHeight(bot.pos.x, bot.pos.z));
       bot.yaw = Math.atan2(dx, dz);
       bot.root.position.copy(bot.pos);
       bot.root.rotation.y = bot.yaw;
@@ -517,34 +584,65 @@ export class CombatSystem {
           bot.fireCooldown = 1.6 + Math.random() * 1.4;
           const enemy = this.bots.find((other) => other.alive && other.team !== bot.team);
           if (enemy && enemy.pos.distanceTo(bot.pos) < 85) {
-            const aim = enemy.pos.clone().sub(bot.pos);
-            aim.y += 1.0;
-            this.spawnProjectile(
-              bot.pos.clone().add(new THREE.Vector3(0, 1.5, 0)),
-              aim.normalize(),
-              WEAPON_MAP.spring_blaster,
-              bot.team,
-              false,
+            const wallBlocked = this.collider?.raycastSolid(
+              bot.pos.x,
+              bot.pos.y + 1.5,
+              bot.pos.z,
+              enemy.pos.x,
+              enemy.pos.y + 1.3,
+              enemy.pos.z,
+              0.7,
             );
+            if (!wallBlocked) {
+              const aim = enemy.pos.clone().sub(bot.pos);
+              aim.y += 1.0;
+              this.spawnProjectile(
+                bot.pos.clone().add(new THREE.Vector3(0, 1.5, 0)),
+                aim.normalize(),
+                WEAPON_MAP.spring_blaster,
+                bot.team,
+                false,
+              );
+            }
           }
         }
       }
     }
     this.scoreboard.activeTargets = aliveCount;
 
-    // 2. 更新弹道与命中判定（含飞鸟与锦鲤捕获）
+    // 2. 更新弹道与命中判定（含 3D 实体墙/建筑/树木防穿墙检测 + 飞鸟与锦鲤捕获）
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
       p.life -= dt;
+      const prevX = p.mesh.position.x;
+      const prevY = p.mesh.position.y;
+      const prevZ = p.mesh.position.z;
       p.vel.y -= p.weapon.gravity * dt;
       p.mesh.position.addScaledVector(p.vel, dt);
       p.mesh.lookAt(p.mesh.position.clone().add(p.vel));
 
-      const groundY = Math.max(0.4, sampleTerrain(p.mesh.position.x, p.mesh.position.z));
+      const groundY = Math.max(0.4, this.getTerrainHeight(p.mesh.position.x, p.mesh.position.z));
       let hit = false;
 
-      // 命中飞鸟 / 锦鲤检测
-      if (p.fromPlayer) {
+      // 优先检测子弹是否撞到墙垣/建筑/树木/桥面（严禁穿墙！）
+      if (this.collider) {
+        const wallHit = this.collider.raycastSolid(
+          prevX,
+          prevY,
+          prevZ,
+          p.mesh.position.x,
+          p.mesh.position.y,
+          p.mesh.position.z,
+          0.4,
+        );
+        if (wallHit) {
+          p.mesh.position.set(wallHit.x, wallHit.y, wallHit.z);
+          hit = true;
+        }
+      }
+
+    // 命中飞鸟 / 锦鲤检测（撞墙的子弹不再穿透命中）
+      if (!hit && p.fromPlayer) {
         for (const w of this.wildlife) {
           if (!w.alive) continue;
           const hitRadius = (w.kind === 'bird' ? 2.4 : 2.6) + p.weapon.projectileRadius;
@@ -649,8 +747,14 @@ export class CombatSystem {
     bot.hp = Math.max(0, bot.hp - dmg);
     bot.hpBarFill.scale.x = Math.max(0.01, bot.hp / bot.maxHp);
 
-    const push = new THREE.Vector3(vel.x, 0, vel.z).normalize().multiplyScalar(1.2);
-    bot.pos.add(push);
+    const push = new THREE.Vector3(vel.x, 0, vel.z).normalize().multiplyScalar(1.0);
+    const nx = bot.pos.x + push.x;
+    const nz = bot.pos.z + push.z;
+    const terr = sampleTerrain(nx, nz);
+    if (!terr?.isWater && (!this.collider || !this.collider.collidesBox(nx, bot.pos.y + 0.05, nz, 0.52, 1.75))) {
+      bot.pos.x = nx;
+      bot.pos.z = nz;
+    }
 
     if (fromPlayer) {
       this.scoreboard.playerHits++;

@@ -74,7 +74,7 @@ function generateRoomCode(): string {
   return out;
 }
 
-function getSafeSpawnPoint(team: TeamId, slotIdx: number): { x: number; z: number; yaw: number } {
+function getSafeSpawnPoint(team: TeamId, slotIdx: number, collider?: any): { x: number; z: number; yaw: number } {
   // 大明湖正南门广场（红队/自由）与南岸西侧广场（蓝队）开阔陆地出生点
   const base =
     team === 'red'
@@ -84,10 +84,11 @@ function getSafeSpawnPoint(team: TeamId, slotIdx: number): { x: number; z: numbe
         : { x: -217, z: 276, yaw: Math.PI };
   const angle = (slotIdx / 8) * Math.PI * 2;
   const radius = 6 + (slotIdx % 3) * 4;
-  for (let r = radius; r <= 24; r += 3) {
+  for (let r = radius; r <= 28; r += 3) {
     const nx = base.x + Math.cos(angle) * r;
     const nz = base.z + Math.sin(angle) * r;
-    if (!sampleTerrain(nx, nz).isWater) {
+    const terr = sampleTerrain(nx, nz);
+    if (!terr.isWater && (!collider || !collider.collidesBox(nx, terr.height + 0.05, nz, 0.55, 1.8))) {
       return { x: nx, z: nz, yaw: base.yaw };
     }
   }
@@ -96,6 +97,7 @@ function getSafeSpawnPoint(team: TeamId, slotIdx: number): { x: number; z: numbe
 
 export class P2PRoomClient {
   private callbacks: P2PRoomCallbacks;
+  private collider: any;
   private peer: Peer | null = null;
   private hostConn: DataConnection | null = null;
   private guestConns = new Map<string, DataConnection>();
@@ -122,8 +124,9 @@ export class P2PRoomClient {
   private msgSeq = 1;
   private joinTimer: number | null = null;
 
-  constructor(callbacks: P2PRoomCallbacks = {}) {
+  constructor(callbacks: P2PRoomCallbacks = {}, collider?: any) {
     this.callbacks = callbacks;
+    this.collider = collider ?? null;
   }
 
   get active(): boolean {
@@ -459,7 +462,7 @@ export class P2PRoomClient {
       e.deaths = 0;
       e.respawnTimer = 0;
       if (this.config.mode !== 'coop_roam') {
-        const sp = getSafeSpawnPoint(e.team, idx++);
+        const sp = getSafeSpawnPoint(e.team, idx++, this.collider);
         e.x = sp.x;
         e.z = sp.z;
         e.y = 2;
@@ -546,7 +549,7 @@ export class P2PRoomClient {
 
   private addBot(team: TeamId, name: string, idx: number) {
     const id = `bot_${team}_${idx}_${Date.now()}`;
-    const sp = getSafeSpawnPoint(team, idx + 2);
+    const sp = getSafeSpawnPoint(team, idx + 2, this.collider);
     this.hostEntities.set(id, {
       id,
       name: `${name}[AI]`,
@@ -639,7 +642,7 @@ export class P2PRoomClient {
         }
       }
 
-      const sp = getSafeSpawnPoint(assignedTeam, this.hostEntities.size);
+      const sp = getSafeSpawnPoint(assignedTeam, this.hostEntities.size, this.collider);
       const memberName = msg.name.trim() || `游侠${this.hostEntities.size}`;
       this.hostEntities.set(guestId, {
         id: guestId,
@@ -801,9 +804,27 @@ export class P2PRoomClient {
     const weapon = WEAPON_MAP[weaponId] || WEAPON_MAP.spring_blaster;
     const fx = Math.sin(yaw);
     const fz = Math.cos(yaw);
-    const hitRadius = Math.max(2.8, weapon.splashRadius * 0.72);
+    const hitRadius = Math.max(2.6, weapon.splashRadius * 0.7);
 
-    // 射线距离判定（手游/Web 轻竞技友好判定）
+    // 先做 3D 实心墙/建筑/树木遮挡射线检测：墙体之后的敌人绝不能被隔墙打穿！
+    const shootY = y + 1.35;
+    let maxEffectiveRange = weapon.maxRange;
+    if (this.collider) {
+      const wallHit = this.collider.raycastSolid(
+        x + fx * 0.8,
+        shootY,
+        z + fz * 0.8,
+        x + fx * weapon.maxRange,
+        shootY,
+        z + fz * weapon.maxRange,
+        0.5,
+      );
+      if (wallHit) {
+        maxEffectiveRange = wallHit.dist + 0.8;
+      }
+    }
+
+    // 射线距离判定（仅判定墙体之前的可视目标）
     for (const target of this.hostEntities.values()) {
       if (target.id === shooterId || !target.alive) continue;
       if (this.config.mode === 'team' && target.team === shooter.team) continue;
@@ -811,10 +832,10 @@ export class P2PRoomClient {
       const dx = target.x - x;
       const dz = target.z - z;
       const proj = dx * fx + dz * fz;
-      if (proj < 0 || proj > weapon.maxRange) continue;
+      if (proj < 0 || proj > maxEffectiveRange) continue;
       const perpSq = dx * dx + dz * dz - proj * proj;
       const dy = Math.abs(target.y - y);
-      if (perpSq <= hitRadius * hitRadius && dy <= 5.5) {
+      if (perpSq <= hitRadius * hitRadius && dy <= 5.0) {
         this.applyDamage(shooter, target, weapon.damage, weapon.name);
         if (weapon.splashRadius <= 0) break;
       }
@@ -887,32 +908,53 @@ export class P2PRoomClient {
         }
       }
 
+      const canBotStand = (cx: number, cz: number) => {
+        const terr = sampleTerrain(cx, cz);
+        if (terr?.isWater) return false;
+        const gy = Math.max(1.2, terr.height);
+        if (this.collider && this.collider.collidesBox(cx, gy + 0.05, cz, 0.52, 1.75)) return false;
+        for (const other of all) {
+          if (other.id === bot.id || !other.alive) continue;
+          if (Math.abs(other.y - gy) < 2.2 && Math.hypot(cx - other.x, cz - other.z) < 1.35) return false;
+        }
+        return true;
+      };
+
       if (nearest && bestDist < 85) {
         const dx = nearest.x - bot.x;
         const dz = nearest.z - bot.z;
         bot.yaw = Math.atan2(dx, dz);
         if (bestDist > 16) {
-          const nx = bot.x + Math.sin(bot.yaw) * 6.2 * dt;
-          const nz = bot.z + Math.cos(bot.yaw) * 6.2 * dt;
-          if (!sampleTerrain(nx, nz).isWater) {
-            bot.x = nx;
-            bot.z = nz;
-          }
+          const stepX = Math.sin(bot.yaw) * 6.2 * dt;
+          const stepZ = Math.cos(bot.yaw) * 6.2 * dt;
+          if (canBotStand(bot.x + stepX, bot.z)) bot.x += stepX;
+          if (canBotStand(bot.x, bot.z + stepZ)) bot.z += stepZ;
         }
         bot.botFireCd -= dt;
         if (bot.botFireCd <= 0 && bestDist < 55) {
-          bot.botFireCd = 1.6 + Math.random() * 1.1;
-          const spreadYaw = bot.yaw + (Math.random() - 0.5) * 0.22;
-          this.processAuthoritativeFire(bot.id, bot.x, bot.y, bot.z, spreadYaw, bot.weaponId || 'spring_blaster');
+          const blocked = this.collider?.raycastSolid(
+            bot.x,
+            bot.y + 1.35,
+            bot.z,
+            nearest.x,
+            nearest.y + 1.35,
+            nearest.z,
+            0.7,
+          );
+          if (!blocked) {
+            bot.botFireCd = 1.6 + Math.random() * 1.1;
+            const spreadYaw = bot.yaw + (Math.random() - 0.5) * 0.22;
+            this.processAuthoritativeFire(bot.id, bot.x, bot.y, bot.z, spreadYaw, bot.weaponId || 'spring_blaster');
+          }
         }
       } else {
-        const nx = bot.botHomeX + Math.cos(bot.botPhase * 0.7) * 9;
-        const nz = bot.botHomeZ + Math.sin(bot.botPhase * 0.7) * 9;
-        if (!sampleTerrain(nx, nz).isWater) {
-          bot.yaw = Math.atan2(nx - bot.x, nz - bot.z);
-          bot.x += (nx - bot.x) * Math.min(1, dt * 3);
-          bot.z += (nz - bot.z) * Math.min(1, dt * 3);
-        }
+        const tx = bot.botHomeX + Math.cos(bot.botPhase * 0.7) * 9;
+        const tz = bot.botHomeZ + Math.sin(bot.botPhase * 0.7) * 9;
+        const stepX = (tx - bot.x) * Math.min(1, dt * 3);
+        const stepZ = (tz - bot.z) * Math.min(1, dt * 3);
+        bot.yaw = Math.atan2(tx - bot.x, tz - bot.z);
+        if (canBotStand(bot.x + stepX, bot.z)) bot.x += stepX;
+        if (canBotStand(bot.x, bot.z + stepZ)) bot.z += stepZ;
       }
     }
   }
@@ -988,7 +1030,7 @@ export class P2PRoomClient {
           if (!e.alive) {
             e.respawnTimer -= dt;
             if (e.respawnTimer <= 0) {
-              const sp = getSafeSpawnPoint(e.team, slot);
+              const sp = getSafeSpawnPoint(e.team, slot, this.collider);
               e.hp = 100;
               e.alive = true;
               e.x = sp.x;

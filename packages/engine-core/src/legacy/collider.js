@@ -260,6 +260,34 @@ export class WorldCollider {
     return false;
   }
 
+  // 3D 线段实心碰撞射线检测（用于子弹/弹道防穿墙与联机视线遮挡判定）
+  raycastSolid(x0, y0, z0, x1, y1, z1, step = 0.45) {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const dz = z1 - z0;
+    const totalDist = Math.hypot(dx, dy, dz);
+    if (totalDist < 1e-4) return null;
+    const steps = Math.max(1, Math.ceil(totalDist / step));
+    const sx = dx / steps;
+    const sy = dy / steps;
+    const sz = dz / steps;
+    for (let i = 1; i <= steps; i++) {
+      const px = x0 + sx * i;
+      const py = y0 + sy * i;
+      const pz = z0 + sz * i;
+      if (this.isSolid(px, py, pz, false)) {
+        return {
+          hit: true,
+          x: px,
+          y: py,
+          z: pz,
+          dist: (totalDist * i) / steps,
+        };
+      }
+    }
+    return null;
+  }
+
   // 第三人称相机 Spring-Arm 射线防穿墙检测：按距离自适应步长，兼顾精度与性能
   castCameraDistance(tx, ty, tz, dirX, dirY, dirZ, maxDist, minDist = 2.2) {
     for (let d = 1.4; d <= maxDist; ) {

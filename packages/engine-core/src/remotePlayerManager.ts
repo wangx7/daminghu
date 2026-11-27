@@ -137,11 +137,13 @@ function buildMiniParachuteShell(): THREE.Group {
 
 export class RemotePlayerManager {
   private scene: THREE.Scene;
+  private collider: any;
   private avatars = new Map<string, RemoteAvatar>();
   private projectiles: RemoteProjectile[] = [];
 
-  constructor(scene: THREE.Scene) {
+  constructor(scene: THREE.Scene, collider?: any) {
     this.scene = scene;
+    this.collider = collider ?? null;
   }
 
   private createAvatar(snap: NetEntitySnapshot): RemoteAvatar {
@@ -367,6 +369,27 @@ export class RemotePlayerManager {
     return { x: a.root.position.x, y: a.root.position.y, z: a.root.position.z };
   }
 
+  // 防止本地玩家与联机好友/远端 AI 角色互相穿模（圆柱推离）
+  resolvePlayerPushOut(px: number, py: number, pz: number, minDist = 1.35): { dx: number; dz: number } {
+    let pushX = 0;
+    let pushZ = 0;
+    for (const a of this.avatars.values()) {
+      if (!a.alive) continue;
+      if (Math.abs(py - a.root.position.y) > 2.2) continue;
+      const dx = px - a.root.position.x;
+      const dz = pz - a.root.position.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 0.001 && dist < minDist) {
+        const overlap = minDist - dist;
+        pushX += (dx / dist) * overlap;
+        pushZ += (dz / dist) * overlap;
+      } else if (dist <= 0.001) {
+        pushX += minDist * 0.5;
+      }
+    }
+    return { dx: pushX, dz: pushZ };
+  }
+
   getMinimapDots(): MinimapTargetDot[] {
     const dots: MinimapTargetDot[] = [];
     for (const a of this.avatars.values()) {
@@ -412,9 +435,17 @@ export class RemotePlayerManager {
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
       p.life -= dt;
+      const prevX = p.mesh.position.x;
+      const prevY = p.mesh.position.y;
+      const prevZ = p.mesh.position.z;
       p.mesh.position.addScaledVector(p.vel, dt);
-      if (p.life <= 0) {
+      const hitWall =
+        this.collider &&
+        this.collider.raycastSolid(prevX, prevY, prevZ, p.mesh.position.x, p.mesh.position.y, p.mesh.position.z, 0.45);
+      if (p.life <= 0 || hitWall) {
         this.scene.remove(p.mesh);
+        p.mesh.geometry.dispose();
+        (p.mesh.material as THREE.Material).dispose();
         this.projectiles.splice(i, 1);
       }
     }

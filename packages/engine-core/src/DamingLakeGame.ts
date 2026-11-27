@@ -150,14 +150,14 @@ export class DamingLakeGame {
       onStateChange: () => this.emitHud(),
     });
 
-    // 挂载武器与默认皮肤
-    this.combat = new CombatSystem(this.scene, this.bgm);
+    // 挂载武器与默认皮肤（传入全局 3D 碰撞器，确保子弹与 AI 绝不穿墙/穿模）
+    this.combat = new CombatSystem(this.scene, this.bgm, this.collider);
     this.combat.onKillFeed = (item) => this.callbacks.onKillFeed?.(item);
     applySkinToPlayer(this.player, SKIN_MAP[this.skinId]);
     this.combat.mountWeaponToPlayer(this.player.root);
 
-    // 挂载 WebRTC P2P 多人联机系统与 3D 远端角色管理器
-    this.remotePlayers = new RemotePlayerManager(this.scene);
+    // 挂载 WebRTC P2P 多人联机系统与 3D 远端角色管理器（传入碰撞器防子弹/角色穿模）
+    this.remotePlayers = new RemotePlayerManager(this.scene, this.collider);
     this.room = new P2PRoomClient({
       onRoomUpdate: (snap) => {
         if (snap.phase === 'playing') {
@@ -189,7 +189,7 @@ export class DamingLakeGame {
       },
       onMatchEnd: (result) => this.callbacks.onMatchEnd?.(result),
       onNotice: (title, body) => this.callbacks.onNotice?.(title, body),
-    });
+    }, this.collider);
 
     this.world.primeAround(this.player.pos.x, this.player.pos.z, 3);
 
@@ -777,6 +777,26 @@ export class DamingLakeGame {
         joyX: this.virtualInput.moveX,
         joyY: this.virtualInput.moveZ,
       });
+
+      // 人与人 / 人与 AI 实体防穿模推离（步行/跑车/划船均生效，且推离时严格受墙体碰撞保护）
+      if (!this.player.ridingBus && !this.player.ridingCruise && this.player.ridingFerrisCabin < 0 && !this.player.inHeli) {
+        const minSep = this.player.inCar ? 2.1 : 1.35;
+        const p1 = this.combat.resolvePlayerPushOut(this.player.pos.x, this.player.pos.y, this.player.pos.z, minSep);
+        const p2 = this.remotePlayers.resolvePlayerPushOut(this.player.pos.x, this.player.pos.y, this.player.pos.z, minSep);
+        const totalDx = p1.dx + p2.dx;
+        const totalDz = p1.dz + p2.dz;
+        const colR = this.player.inCar ? 0.72 : 0.38;
+        if (Math.abs(totalDx) > 1e-4 && !this.collider.collidesBox(this.player.pos.x + totalDx, this.player.pos.y, this.player.pos.z, colR, 1.4)) {
+          this.player.pos.x += totalDx;
+        }
+        if (Math.abs(totalDz) > 1e-4 && !this.collider.collidesBox(this.player.pos.x, this.player.pos.y, this.player.pos.z + totalDz, colR, 1.4)) {
+          this.player.pos.z += totalDz;
+        }
+        if (Math.abs(totalDx) > 1e-4 || Math.abs(totalDz) > 1e-4) {
+          this.player.root.position.copy(this.player.pos);
+        }
+      }
+
       this.player.updateCamera(this.camera);
       this.world.update(this.player.pos.x, this.player.pos.z, 3);
     }
