@@ -1,0 +1,16 @@
+{
+  "name": "daminghu-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @daminghu/web-client dev",
+    "dev:host": "pnpm --filter @daminghu/web-client dev -- --host",
+    "build": "pnpm --filter @daminghu/web-client build",
+    "preview": "pnpm --filter @daminghu/web-client preview",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

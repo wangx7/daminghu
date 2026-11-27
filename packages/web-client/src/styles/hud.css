@@ -1,0 +1,1464 @@
+/* 字体 @font-face 定义在 index.html 中以确保子路径部署（如 GitHub Pages）相对路径正确 */
+
+:root {
+  --ink-bg: rgba(14, 24, 34, 0.72);
+  --ink-strong: rgba(12, 20, 29, 0.92);
+  --gold: #d9b468;
+  --gold-soft: rgba(217, 180, 104, 0.36);
+  --cinnabar: #c93b32;
+  --jade: #34a88f;
+  --red-team: #ef4444;
+  --blue-team: #3b82f6;
+  --text-main: #f7f2e7;
+  --text-muted: rgba(247, 242, 231, 0.72);
+}
+
+* {
+  box-sizing: border-box;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  touch-action: none;
+  background: #0d1720;
+  color: var(--text-main);
+  font-family: 'WK', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.game-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.webgl-host {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.hud-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.hud-layer button,
+.hud-layer input,
+.hud-layer .interactive {
+  pointer-events: auto;
+}
+
+/* ===== 左上角：极简团团胶囊（不挡视野） ===== */
+.hud-tl {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 6px;
+  background: var(--ink-bg);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--gold-soft);
+  border-radius: 30px;
+  cursor: pointer;
+}
+
+.avatar-seal {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, var(--cinnabar), #8f1d18);
+  border: 1.5px solid var(--gold);
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff6e6;
+}
+
+.player-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.player-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.skin-pill {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(217, 180, 104, 0.18);
+  border: 1px solid var(--gold-soft);
+  color: #f3d796;
+}
+
+.coord-line {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ===== 顶部中央：仅打鸟抓鱼或对战时显示 ===== */
+.hud-tc {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.hunt-bar {
+  display: flex;
+  gap: 14px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: var(--ink-bg);
+  border: 1px solid var(--gold-soft);
+  font-size: 13px;
+  font-weight: 700;
+  color: #fde68a;
+}
+
+.scoreboard-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 16px;
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.35), rgba(14, 24, 34, 0.9), rgba(59, 130, 246, 0.35));
+  border: 1px solid var(--gold-soft);
+  border-radius: 16px;
+}
+
+.team-score {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.team-score.red { color: #fca5a5; }
+.team-score.blue { color: #93c5fd; }
+.team-score strong { font-size: 18px; color: #fff; }
+
+.match-timer {
+  padding: 2px 9px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--gold-soft);
+  font-size: 12px;
+  font-weight: 700;
+  color: #fde68a;
+}
+
+.kill-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.kill-item {
+  padding: 4px 12px;
+  border-radius: 12px;
+  background: rgba(14, 24, 34, 0.84);
+  border-left: 3px solid var(--gold);
+  font-size: 12px;
+}
+
+.kill-item.red { border-left-color: var(--red-team); }
+.kill-item.blue { border-left-color: var(--blue-team); }
+
+/* ===== 右上角：紧凑小地图 + 唯一「车库·设置」入口 ===== */
+.hud-tr {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.minimap-card {
+  padding: 4px;
+  background: var(--ink-bg);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--gold-soft);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.minimap-canvas {
+  display: block;
+  width: 148px;
+  height: 80px;
+  border-radius: 8px;
+}
+
+.garage-entry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1.5px solid var(--gold);
+  background: linear-gradient(135deg, rgba(201, 59, 50, 0.9), rgba(143, 29, 24, 0.92));
+  color: #fff8eb;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+
+.garage-entry-btn:active {
+  transform: scale(0.95);
+}
+
+.gear-dot {
+  font-size: 15px;
+}
+
+/* ===== 左下角：载具仪表 ===== */
+.hud-bl {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+}
+
+.vehicle-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 14px;
+  background: var(--ink-bg);
+  border: 1px solid var(--gold-soft);
+  font-size: 12px;
+}
+
+.speed-num {
+  font-size: 20px;
+  font-weight: 700;
+  color: #fde047;
+  line-height: 1;
+}
+
+.vehicle-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.nitro-mini-bar {
+  width: 72px;
+  height: 4px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+
+.nitro-mini-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #38bdf8, #fde047);
+  transition: width 0.08s linear;
+}
+
+/* ===== 底部中央：互动提示 ===== */
+.hud-bc {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(520px, 84vw);
+}
+
+.context-prompt {
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: rgba(201, 59, 50, 0.88);
+  border: 1px solid #fde68a;
+  color: #fff;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+  cursor: default;
+}
+
+.context-prompt.clickable {
+  cursor: pointer;
+  background: linear-gradient(135deg, rgba(15, 118, 110, 0.92), rgba(17, 94, 89, 0.94));
+  border-color: rgba(153, 246, 228, 0.72);
+}
+
+.context-prompt.clickable:active {
+  transform: scale(0.96);
+}
+
+/* ===== 右下角：极简操作区 ===== */
+.hud-br {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.armed-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--ink-bg);
+  border: 1px solid var(--gold-soft);
+  font-size: 12px;
+}
+
+.unequip-btn {
+  border: none;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fde68a;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.action-cluster {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.circle-btn {
+  border-radius: 50%;
+  border: 2px solid var(--gold-soft);
+  background: var(--ink-strong);
+  color: #fff;
+  font-family: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+.circle-btn:active {
+  transform: scale(0.92);
+}
+
+.circle-btn.jump {
+  width: 52px;
+  height: 52px;
+  font-size: 12px;
+}
+
+.circle-btn.fire {
+  width: 70px;
+  height: 70px;
+  font-size: 15px;
+  border-color: #fde68a;
+  background: radial-gradient(circle at 30% 30%, #ef4444, #991b1b);
+}
+
+/* ===== Toast ===== */
+.notice-toast {
+  position: absolute;
+  top: 66px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 18px;
+  border-radius: 14px;
+  background: var(--ink-strong);
+  border: 1px solid var(--gold);
+  text-align: center;
+  max-width: 380px;
+}
+
+.notice-toast strong {
+  display: block;
+  color: #fde68a;
+  font-size: 13px;
+}
+
+.notice-toast span {
+  font-size: 12px;
+}
+
+/* ===== QQ 飞车风格 3D 展示配置大厅 ===== */
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 12, 18, 0.62);
+  backdrop-filter: blur(6px);
+  display: grid;
+  place-items: center;
+  pointer-events: auto;
+  z-index: 30;
+}
+
+.qq-garage {
+  width: min(940px, 95vw);
+  height: min(560px, 88vh);
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  border-radius: 20px;
+  overflow: hidden;
+  background: linear-gradient(155deg, rgba(16, 28, 41, 0.97), rgba(10, 18, 27, 0.98));
+  border: 1.5px solid var(--gold);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
+}
+
+.garage-left {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 14px 16px;
+  background: radial-gradient(circle at 50% 45%, rgba(56, 189, 248, 0.16), rgba(12, 20, 29, 0.94));
+  border-right: 1px solid var(--gold-soft);
+}
+
+.garage-brand .brand-tag {
+  font-size: 11px;
+  color: #7dd3fc;
+  letter-spacing: 1px;
+}
+
+.garage-brand h3 {
+  margin: 4px 0 2px;
+  font-size: 18px;
+  color: #fde68a;
+}
+
+.garage-brand p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.showcase-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 220px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.showcase-wrap:active {
+  cursor: grabbing;
+}
+
+.showcase-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.showcase-tip {
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: rgba(247, 242, 231, 0.6);
+  white-space: nowrap;
+}
+
+.garage-left-footer {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+}
+
+.garage-right {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.garage-tabs-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--gold-soft);
+  background: rgba(255, 255, 255, 0.03);
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.garage-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.garage-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.garage-tabs > button {
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.garage-tabs > button.active {
+  color: #fff;
+  border-color: var(--gold);
+  background: rgba(217, 180, 104, 0.2);
+}
+
+.garage-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.section-label {
+  font-size: 12px;
+  color: #fde68a;
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.btn-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.guofeng-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--gold-soft);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-main);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.guofeng-btn.active {
+  background: rgba(201, 59, 50, 0.85);
+  border-color: #fde68a;
+  color: #fff;
+}
+
+.primary-btn {
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--gold);
+  background: linear-gradient(135deg, var(--cinnabar), #9a241d);
+  color: #fff;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.close-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--gold-soft);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.item-card {
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.item-card.equipped {
+  border-color: var(--gold);
+  background: rgba(217, 180, 104, 0.14);
+}
+
+.weapon-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.skin-swatch {
+  height: 44px;
+  border-radius: 8px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.65);
+}
+
+.stat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.stat-bar {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+
+.stat-bar > i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--jade), #fde047);
+}
+
+/* ===== 明湖书院趣味出题弹窗 ===== */
+.quiz-backdrop {
+  z-index: 45;
+}
+
+.quiz-card {
+  width: min(520px, 92vw);
+  padding: 18px 20px;
+  border-radius: 18px;
+  background: linear-gradient(160deg, #faf3e0, #efe2c4);
+  color: #2b2116;
+  border: 2px solid #c89b45;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.quiz-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.quiz-seal {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: #b92c24;
+  color: #fff6e6;
+  border: 2px solid #f2d59b;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.quiz-title-box {
+  flex: 1;
+}
+
+.quiz-title-box h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #7c2d12;
+}
+
+.quiz-title-box span {
+  font-size: 12px;
+  color: #6b563c;
+}
+
+.quiz-badge-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.quiz-card .skin-pill {
+  background: rgba(185, 44, 36, 0.12);
+  border-color: rgba(185, 44, 36, 0.35);
+  color: #9a241d;
+}
+
+.quiz-hint {
+  font-size: 12px;
+  color: #786043;
+}
+
+.quiz-prompt {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px dashed #c89b45;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.quiz-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.quiz-opt-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1.5px solid #d4b270;
+  background: #fffdf7;
+  color: #2b2116;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.quiz-opt-btn:hover {
+  border-color: #b92c24;
+  background: #fff7e6;
+}
+
+.quiz-opt-btn.correct {
+  border-color: #15803d;
+  background: #dcfce7;
+  color: #14532d;
+}
+
+.quiz-opt-btn.wrong {
+  border-color: #dc2626;
+  background: #fee2e2;
+  color: #7f1d1d;
+}
+
+.opt-letter {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #e9d5a8;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.quiz-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.quiz-feedback.ok {
+  background: #dcfce7;
+  color: #14532d;
+}
+
+.quiz-feedback.err {
+  background: #fef3c7;
+  color: #78350f;
+}
+
+.quiz-feedback p {
+  margin: 2px 0 0;
+}
+
+/* ===== 通用弹窗（景点 / 明信片） ===== */
+.guofeng-modal {
+  width: min(640px, 92vw);
+  max-height: 82vh;
+  overflow-y: auto;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: var(--ink-strong);
+  border: 1.5px solid var(--gold);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--gold-soft);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #fde68a;
+}
+
+.landmark-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.landmark-chip {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+  text-align: left;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.landmark-chip.visited {
+  border-color: var(--gold);
+  color: #fde68a;
+}
+
+.postcard-img {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--gold-soft);
+}
+
+/* ===== 游玩教程卡片 ===== */
+.guide-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.guide-card {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--gold-soft);
+  background: rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.guide-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #fde68a;
+}
+
+.guide-num {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: rgba(201, 59, 50, 0.85);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.guide-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-muted);
+}
+
+.guide-list b {
+  color: var(--text-main);
+}
+
+.guide-list kbd {
+  display: inline-block;
+  padding: 0 5px;
+  margin: 0 2px;
+  border-radius: 4px;
+  background: rgba(217, 180, 104, 0.2);
+  border: 1px solid var(--gold-soft);
+  color: #fde68a;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+
+/* ===== 手机端 / 触控设备专属多点触控系统 ===== */
+.mobile-controls-root {
+  display: none;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 14;
+}
+
+.m-ico {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+.m-ico-lg {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@media (pointer: coarse), (max-width: 960px) {
+  .mobile-controls-root {
+    display: block;
+  }
+
+  .desktop-only-actions,
+  .desktop-only-hint {
+    display: none;
+  }
+
+  .hud-tl {
+    top: max(10px, env(safe-area-inset-top));
+    left: max(10px, env(safe-area-inset-left));
+    padding: 4px 10px 4px 5px;
+    gap: 6px;
+  }
+
+  .avatar-seal {
+    width: 28px;
+    height: 28px;
+    font-size: 12px;
+  }
+
+  .player-name-row {
+    font-size: 12px;
+  }
+
+  .coord-line {
+    font-size: 10px;
+  }
+
+  .hud-tr {
+    top: max(10px, env(safe-area-inset-top));
+    right: max(10px, env(safe-area-inset-right));
+    gap: 6px;
+  }
+
+  .minimap-canvas {
+    width: 112px;
+    height: 60px;
+  }
+
+  .garage-entry-btn {
+    padding: 5px 11px;
+    font-size: 12px;
+  }
+
+  /* 手机端载具速度/海拔仪表挪到左上角胶囊下方，绝不遮挡左下角摇杆或方向键 */
+  .hud-bl {
+    left: max(10px, env(safe-area-inset-left));
+    bottom: auto;
+    top: calc(max(10px, env(safe-area-inset-top)) + 48px);
+  }
+
+  .vehicle-badge {
+    padding: 4px 10px;
+    gap: 6px;
+    font-size: 11px;
+  }
+
+  .speed-num {
+    font-size: 16px;
+  }
+
+  .hud-bc {
+    bottom: max(12px, env(safe-area-inset-bottom));
+    max-width: 44vw;
+  }
+
+  .context-prompt {
+    padding: 4px 10px;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+
+  .hud-br {
+    right: max(14px, env(safe-area-inset-right));
+    bottom: calc(max(16px, env(safe-area-inset-bottom)) + 148px);
+  }
+
+  .notice-toast {
+    top: calc(max(10px, env(safe-area-inset-top)) + 44px);
+    padding: 6px 14px;
+    max-width: 60vw;
+  }
+
+  /* 左下角 360° 虚拟摇杆 */
+  .m-joy-base {
+    position: absolute;
+    left: max(20px, env(safe-area-inset-left));
+    bottom: max(20px, env(safe-area-inset-bottom));
+    width: 112px;
+    height: 112px;
+    border-radius: 50%;
+    background: rgba(14, 24, 34, 0.44);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1.5px solid var(--gold-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    pointer-events: auto;
+  }
+
+  .m-joy-ring {
+    position: absolute;
+    inset: 14px;
+    border-radius: 50%;
+    border: 1px dashed rgba(217, 180, 104, 0.32);
+    pointer-events: none;
+  }
+
+  .m-joy-knob {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 32% 32%, #ffe7a8, #b88332);
+    border: 1.5px solid rgba(255, 255, 255, 0.55);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+  }
+
+  /* 右下角动作区：上方快捷载具条 + 下方主动作圆键组 */
+  .m-action-zone {
+    position: absolute;
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(18px, env(safe-area-inset-bottom));
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+    pointer-events: none;
+  }
+
+  .m-vehicle-strip {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    pointer-events: auto;
+  }
+
+  .m-chip-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--gold-soft);
+    background: rgba(14, 24, 34, 0.72);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    color: var(--text-main);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    touch-action: none;
+    transition: transform 0.12s, background 0.12s, border-color 0.12s;
+  }
+
+  .m-chip-btn.active {
+    background: rgba(217, 180, 104, 0.34);
+    border-color: #fde68a;
+    color: #fff8eb;
+    box-shadow: 0 0 12px rgba(217, 180, 104, 0.35);
+  }
+
+  .m-chip-btn:active {
+    transform: scale(0.93);
+  }
+
+  .m-main-pad {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    pointer-events: auto;
+  }
+
+  .m-circle-btn {
+    border-radius: 50%;
+    border: 1.5px solid var(--gold-soft);
+    background: rgba(12, 20, 29, 0.8);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    color: #fff;
+    font-family: inherit;
+    font-weight: 700;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    touch-action: none;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+    transition: transform 0.12s, filter 0.12s;
+  }
+
+  .m-circle-btn.active,
+  .m-circle-btn:active {
+    transform: scale(0.92);
+    filter: brightness(1.12);
+  }
+
+  .m-act-btn {
+    width: 56px;
+    height: 56px;
+    font-size: 12px;
+    padding: 0 4px;
+    line-height: 1.15;
+    background: linear-gradient(145deg, rgba(15, 118, 110, 0.92), rgba(17, 94, 89, 0.95));
+    border-color: rgba(153, 246, 228, 0.72);
+    color: #f0fdfa;
+  }
+
+  .m-descend-btn {
+    width: 54px;
+    height: 54px;
+    font-size: 11px;
+    background: rgba(30, 58, 138, 0.78);
+    border-color: rgba(147, 197, 253, 0.6);
+  }
+
+  .m-primary-btn {
+    width: 64px;
+    height: 64px;
+    font-size: 14px;
+    background: linear-gradient(145deg, rgba(201, 59, 50, 0.88), rgba(143, 29, 24, 0.94));
+    border-color: rgba(255, 224, 178, 0.7);
+    color: #fff8eb;
+  }
+
+  .m-primary-btn.heli {
+    background: linear-gradient(145deg, rgba(14, 165, 233, 0.9), rgba(29, 78, 216, 0.94));
+    border-color: #bae6fd;
+  }
+
+  .m-primary-btn.boat {
+    background: linear-gradient(145deg, rgba(13, 148, 136, 0.9), rgba(15, 118, 110, 0.95));
+    border-color: #99f6e4;
+  }
+
+  .m-fire-btn {
+    width: 68px;
+    height: 68px;
+    font-size: 15px;
+    border-color: #fde68a;
+    background: radial-gradient(circle at 30% 30%, #ef4444, #991b1b);
+  }
+
+  /* ===== 跑车专属双区驾驶按键层 ===== */
+  .m-drive-steer {
+    position: absolute;
+    left: max(18px, env(safe-area-inset-left));
+    bottom: max(22px, env(safe-area-inset-bottom));
+    display: flex;
+    gap: 12px;
+    pointer-events: auto;
+  }
+
+  .m-drive-pedals {
+    position: absolute;
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(20px, env(safe-area-inset-bottom));
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+    pointer-events: auto;
+  }
+
+  .m-drive-top-row,
+  .m-drive-main-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .m-drive-btn {
+    border-radius: 16px;
+    border: 1.5px solid var(--gold-soft);
+    background: rgba(14, 24, 34, 0.78);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    color: var(--text-main);
+    font-family: inherit;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    transition: transform 0.1s, filter 0.1s, border-color 0.1s;
+  }
+
+  .m-drive-btn.active,
+  .m-drive-btn:active {
+    transform: scale(0.92);
+    border-color: #fde68a;
+    filter: brightness(1.16);
+  }
+
+  .m-steer-btn {
+    width: 68px;
+    height: 60px;
+  }
+
+  .m-util-btn {
+    width: 54px;
+    height: 36px;
+    border-radius: 11px;
+    font-size: 12px;
+  }
+
+  .m-drift-btn {
+    background: rgba(180, 83, 9, 0.72);
+    border-color: rgba(253, 224, 71, 0.5);
+  }
+
+  .m-exit-btn {
+    background: rgba(153, 34, 27, 0.8);
+    border-color: rgba(252, 165, 165, 0.55);
+  }
+
+  .m-brake-btn {
+    width: 54px;
+    height: 54px;
+    border-radius: 50%;
+    font-size: 13px;
+  }
+
+  .m-boost-btn {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    font-size: 14px;
+    background: linear-gradient(145deg, rgba(14, 165, 233, 0.92), rgba(37, 99, 235, 0.95));
+    border-color: #bae6fd;
+    box-shadow: 0 0 18px rgba(56, 189, 248, 0.55);
+  }
+
+  .m-gas-btn {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    font-size: 15px;
+    background: linear-gradient(145deg, rgba(217, 119, 6, 0.92), rgba(161, 72, 12, 0.95));
+    border-color: #fde68a;
+  }
+}
+
+/* ===== 车库与弹窗：移动端横竖屏自适应 ===== */
+@media (max-width: 960px), (max-height: 540px) {
+  .qq-garage {
+    grid-template-columns: 230px minmax(0, 1fr);
+    width: min(940px, calc(100vw - 20px));
+    height: min(560px, calc(100vh - 20px));
+  }
+
+  .garage-left {
+    padding: 10px 12px;
+  }
+
+  .garage-brand h3 {
+    font-size: 15px;
+  }
+
+  .showcase-wrap {
+    min-height: 110px;
+  }
+
+  .garage-tabs-bar {
+    padding: 8px 10px;
+  }
+
+  .garage-tabs > button {
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+
+  .garage-body {
+    padding: 10px;
+  }
+
+  .card-grid {
+    grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+  }
+
+  .quiz-options {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) and (orientation: portrait) {
+  .qq-garage {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 225px minmax(0, 1fr);
+    width: calc(100vw - 20px);
+    height: min(760px, calc(100vh - 28px));
+  }
+
+  .garage-left {
+    border-right: none;
+    border-bottom: 1px solid var(--gold-soft);
+    padding: 10px 12px;
+  }
+
+  .showcase-wrap {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .garage-left-footer {
+    display: none;
+  }
+
+  .card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* 竖屏紧凑触控尺寸，防止左右手重叠 */
+  .m-joy-base {
+    width: 102px;
+    height: 102px;
+    left: max(14px, env(safe-area-inset-left));
+  }
+
+  .m-action-zone {
+    right: max(12px, env(safe-area-inset-right));
+  }
+
+  .m-drive-steer {
+    left: max(12px, env(safe-area-inset-left));
+    gap: 8px;
+  }
+
+  .m-steer-btn {
+    width: 56px;
+    height: 54px;
+  }
+
+  .m-drive-pedals {
+    right: max(12px, env(safe-area-inset-right));
+    gap: 8px;
+  }
+
+  .m-drive-top-row,
+  .m-drive-main-row {
+    gap: 7px;
+  }
+
+  .m-brake-btn {
+    width: 48px;
+    height: 48px;
+    font-size: 12px;
+  }
+
+  .m-boost-btn {
+    width: 54px;
+    height: 54px;
+    font-size: 13px;
+  }
+
+  .m-gas-btn {
+    width: 58px;
+    height: 58px;
+    font-size: 14px;
+  }
+
+  .hud-bc {
+    bottom: calc(max(18px, env(safe-area-inset-bottom)) + 132px);
+    max-width: 82vw;
+  }
+}
