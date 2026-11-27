@@ -1,6 +1,18 @@
 export { DamingLakeGame, type DamingLakeGameOptions, type GameCallbacks } from './DamingLakeGame';
 export { GuofengBgmEngine } from './bgmEngine';
 export { CombatSystem, buildWeaponMesh } from './combatSystem';
+export {
+  computeSplashFalloff,
+  resolveBallisticSegment,
+  segmentSphereIntersectT,
+  selectBestAimTarget,
+  traceAuthoritativeBallistic,
+  type AimCandidate,
+  type AimSelectionResult,
+  type BallisticSplashHit,
+  type BallisticTarget,
+  type BallisticTraceResult,
+} from './combatBallistics';
 export { buildSeasonalTuanMesh, applySkinToPlayer } from './skinRenderer';
 export { renderDamingMinimap } from './minimapRenderer';
 export { P2PRoomClient, compute3DRayHit } from './p2pRoomClient';

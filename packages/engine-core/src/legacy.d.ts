@@ -160,11 +160,14 @@ declare module './legacy/map_data.js' {
   export interface RawLandmark {
     id: string;
     name: string;
+    tag?: string;
     poem?: string;
     x: number;
     z: number;
-    yaw?: number;
-    district?: string;
+    spawnX?: number;
+    spawnZ?: number;
+    spawnYaw?: number;
+    built?: boolean;
   }
 
   export const LANDMARKS: RawLandmark[];

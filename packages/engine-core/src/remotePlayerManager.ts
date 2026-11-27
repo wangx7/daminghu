@@ -10,7 +10,9 @@ import {
   type VehicleMode,
   type WeaponId,
 } from '@daminghu/shared';
+import { selectBestAimTarget, type AimCandidate } from './combatBallistics';
 import { buildWeaponMesh } from './combatSystem';
+import type { WorldCollider } from './legacy/collider.js';
 import { createBrowserPlatformAdapter, type PlatformAdapter } from './platformAdapter';
 import { buildSeasonalTuanMesh } from './skinRenderer';
 import { disposeObject3D } from './threeDispose';
@@ -94,6 +96,7 @@ interface RemoteAvatar {
 interface RemoteProjectile {
   mesh: THREE.Mesh;
   vel: THREE.Vector3;
+  gravity: number;
   life: number;
 }
 
@@ -184,14 +187,14 @@ function buildMiniParachuteShell(): THREE.Group {
 
 export class RemotePlayerManager {
   private scene: THREE.Scene;
-  private collider: any;
+  private collider: WorldCollider | null;
   private platform: PlatformAdapter;
   private avatars = new Map<string, RemoteAvatar>();
   private projectiles: RemoteProjectile[] = [];
   private projGeoCache = new Map<string, THREE.BufferGeometry>();
   private projMatCache = new Map<string, THREE.MeshBasicMaterial>();
 
-  constructor(scene: THREE.Scene, collider?: any, platform: PlatformAdapter = createBrowserPlatformAdapter()) {
+  constructor(scene: THREE.Scene, collider?: WorldCollider | null, platform: PlatformAdapter = createBrowserPlatformAdapter()) {
     this.scene = scene;
     this.collider = collider ?? null;
     this.platform = platform;
@@ -432,17 +435,45 @@ export class RemotePlayerManager {
     const fx = Math.sin(yaw) * cosP;
     const fy = Math.sin(pitch);
     const fz = Math.cos(yaw) * cosP;
-    mesh.position.set(x + fx * 1.4, y + 1.35 + fy * 1.4, z + fz * 1.4);
+    mesh.position.set(x + Math.sin(yaw) * 1.4, y + 1.45, z + Math.cos(yaw) * 1.4);
     this.scene.add(mesh);
 
     const vel = new THREE.Vector3(fx * weapon.projectileSpeed, fy * weapon.projectileSpeed, fz * weapon.projectileSpeed);
-    this.projectiles.push({ mesh, vel, life: weapon.maxRange / Math.max(10, weapon.projectileSpeed) });
+    this.projectiles.push({
+      mesh,
+      vel,
+      gravity: weapon.gravity,
+      life: Math.min(3.2, weapon.maxRange / Math.max(10, weapon.projectileSpeed) + (weapon.gravity > 0 ? 0.6 : 0)),
+    });
   }
 
   getPlayerPosition(playerId: string): { x: number; y: number; z: number } | null {
     const a = this.avatars.get(playerId);
     if (!a) return null;
     return { x: a.root.position.x, y: a.root.position.y, z: a.root.position.z };
+  }
+
+  /** 返回当前联机房内可被准星锁定的远端敌对目标候选列表 */
+  getAimCandidates(localTeam: TeamId, roomMode: 'coop_roam' | 'ffa' | 'team'): AimCandidate[] {
+    const out: AimCandidate[] = [];
+    for (const a of this.avatars.values()) {
+      if (!a.alive) continue;
+      if (roomMode === 'team' && localTeam !== 'none' && a.team === localTeam) continue;
+      const isHeli = a.vehicle === 'heli';
+      out.push({
+        id: `remote:${a.id}`,
+        x: a.root.position.x,
+        y: a.root.position.y + 1.25,
+        z: a.root.position.z,
+        kind: 'enemy',
+        name: a.name,
+        hpRatio: a.maxHp > 0 ? a.hp / a.maxHp : undefined,
+        directRadius: isHeli ? 2.4 : 1.25,
+        assistBaseRadius: isHeli ? 3.8 : 2.1,
+        assistMaxRadius: 4.6,
+      });
+    }
+    return out;
   }
 
   /** 联机准星中心射线目标吸附（跳过队友与死亡目标） */
@@ -453,36 +484,22 @@ export class RemotePlayerManager {
     localTeam: TeamId,
     roomMode: 'coop_roam' | 'ffa' | 'team',
   ): { point: THREE.Vector3; kind: 'enemy'; name: string; distance: number; hpRatio?: number } | null {
-    let bestT = maxRange;
-    let best: { point: THREE.Vector3; kind: 'enemy'; name: string; distance: number; hpRatio?: number } | null = null;
-    for (const a of this.avatars.values()) {
-      if (!a.alive) continue;
-      if (roomMode === 'team' && localTeam !== 'none' && a.team === localTeam) continue;
-      const cx = a.root.position.x;
-      const cy = a.root.position.y + 1.25;
-      const cz = a.root.position.z;
-      const rx = cx - rayOrigin.x;
-      const ry = cy - rayOrigin.y;
-      const rz = cz - rayOrigin.z;
-      const t = rx * rayDir.x + ry * rayDir.y + rz * rayDir.z;
-      if (t <= 2 || t >= bestT) continue;
-      const baseRadius = a.vehicle === 'heli' ? 3.8 : 2.1;
-      const radius = Math.min(4.6, baseRadius + t * 0.024);
-      const px = rayOrigin.x + rayDir.x * t - cx;
-      const py = rayOrigin.y + rayDir.y * t - cy;
-      const pz = rayOrigin.z + rayDir.z * t - cz;
-      if (px * px + py * py + pz * pz <= radius * radius) {
-        bestT = t;
-        best = {
-          point: new THREE.Vector3(cx, cy, cz),
-          kind: 'enemy',
-          name: a.name,
-          distance: t,
-          hpRatio: a.maxHp > 0 ? a.hp / a.maxHp : undefined,
-        };
-      }
-    }
-    return best;
+    const best = selectBestAimTarget({
+      rayOrigin,
+      rayDir,
+      maxRange,
+      candidates: this.getAimCandidates(localTeam, roomMode),
+      mode: 'roam',
+      isMultiplayerCombat: roomMode !== 'coop_roam',
+    });
+    if (!best) return null;
+    return {
+      point: new THREE.Vector3(best.x, best.y, best.z),
+      kind: 'enemy',
+      name: best.name,
+      distance: best.distance,
+      hpRatio: best.hpRatio,
+    };
   }
 
   findAimTargetPoint(
@@ -623,6 +640,7 @@ export class RemotePlayerManager {
       const prevX = p.mesh.position.x;
       const prevY = p.mesh.position.y;
       const prevZ = p.mesh.position.z;
+      p.vel.y -= p.gravity * dt;
       p.mesh.position.addScaledVector(p.vel, dt);
       const hitWall =
         this.collider &&

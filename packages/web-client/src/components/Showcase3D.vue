@@ -16,6 +16,7 @@ let scene: THREE.Scene | null = null;
 let camera: THREE.PerspectiveCamera | null = null;
 let avatarGroup: THREE.Group | null = null;
 let ringMesh: THREE.Mesh | null = null;
+let resizeObserver: ResizeObserver | null = null;
 let rafId = 0;
 let rotY = 0.45;
 let dragging = false;
@@ -99,6 +100,10 @@ onMounted(() => {
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onUp);
   window.addEventListener('resize', resize);
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => resize());
+    resizeObserver.observe(hostRef.value);
+  }
 
   const start = performance.now();
   const tick = () => {
@@ -139,6 +144,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', onUp);
   window.removeEventListener('pointercancel', onUp);
   window.removeEventListener('resize', resize);
+  resizeObserver?.disconnect();
+  resizeObserver = null;
   if (scene) disposeObject3D(scene, { disposeTextures: true });
   renderer?.dispose();
   renderer?.domElement.remove();

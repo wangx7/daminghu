@@ -558,10 +558,15 @@ body,
   gap: 4px;
   flex: 1;
   min-width: 0;
+  padding-right: 6px;
   overflow-x: auto;
   touch-action: pan-x;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
+}
+
+.garage-tabs-bar .close-btn {
+  flex-shrink: 0;
 }
 
 .garage-tabs::-webkit-scrollbar {

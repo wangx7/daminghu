@@ -20,6 +20,13 @@ import {
   type VehicleMode,
   type WeaponId,
 } from '@daminghu/shared';
+import {
+  computeSplashFalloff,
+  resolveBallisticSegment,
+  traceAuthoritativeBallistic,
+  type BallisticTarget,
+} from './combatBallistics';
+import type { WorldCollider } from './legacy/collider.js';
 import { sampleTerrain } from './legacy/map_data.js';
 import { createBrowserPlatformAdapter, type PlatformAdapter } from './platformAdapter';
 
@@ -111,11 +118,27 @@ function getVehicleCnName(v: VehicleMode): string {
 interface HostEntity extends NetEntitySnapshot {
   isHost: boolean;
   respawnTimer: number;
+  respawnAt: number;
   lastFireAt: number;
   botHomeX: number;
   botHomeZ: number;
   botPhase: number;
   botFireCd: number;
+}
+
+interface HostProjectile {
+  shooterId: string;
+  weaponId: WeaponId;
+  originX: number;
+  originY: number;
+  originZ: number;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  life: number;
 }
 
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -140,7 +163,7 @@ function generateRoomCode(): string {
   return out;
 }
 
-function getSafeSpawnPoint(team: TeamId, slotIdx: number, collider?: any): { x: number; z: number; yaw: number } {
+function getSafeSpawnPoint(team: TeamId, slotIdx: number, collider?: WorldCollider | null): { x: number; z: number; yaw: number } {
   // 大明湖正南门广场（红队/自由）与南岸西侧广场（蓝队）开阔陆地出生点
   const base =
     team === 'red'
@@ -163,7 +186,7 @@ function getSafeSpawnPoint(team: TeamId, slotIdx: number, collider?: any): { x: 
 
 export class P2PRoomClient {
   private callbacks: P2PRoomCallbacks;
-  private collider: any;
+  private collider: WorldCollider | null;
   private platform: PlatformAdapter;
   private networkOptions: P2PNetworkOptions;
   private peer: Peer | null = null;
@@ -184,6 +207,8 @@ export class P2PRoomClient {
 
   // Host 权威实体表 / Guest 镜像成员表
   private hostEntities = new Map<string, HostEntity>();
+  private hostProjectiles: HostProjectile[] = [];
+  private matchEndAt = 0;
   private guestMembers: RoomMember[] = [];
   private localHp = 100;
   private localAlive = true;
@@ -199,7 +224,7 @@ export class P2PRoomClient {
 
   constructor(
     callbacks: P2PRoomCallbacks = {},
-    collider?: any,
+    collider?: WorldCollider | null,
     platform: PlatformAdapter = createBrowserPlatformAdapter(),
     networkOptions: P2PNetworkOptions = {},
   ) {
@@ -376,6 +401,7 @@ export class P2PRoomClient {
         kills: 0,
         deaths: 0,
         respawnTimer: 0,
+        respawnAt: 0,
         lastFireAt: 0,
         botHomeX: localState.x,
         botHomeZ: localState.z,
@@ -461,7 +487,7 @@ export class P2PRoomClient {
       this.hostConn = conn;
 
       conn.on('open', () => {
-        this.clearJoinTimer();
+        // 保持入房超时计时器，直到真正收到房主 welcome 再结束握手计时
         this.sendToHost({
           type: 'join',
           name: this.localPlayerName,
@@ -477,7 +503,9 @@ export class P2PRoomClient {
       });
 
       conn.on('close', () => {
-        if (this.status === 'connected') {
+        if (this.status === 'joining') {
+          this.failConnection('房主已退出或握手中断，请确认房间码后重试');
+        } else if (this.status === 'connected') {
           this.callbacks.onNotice?.('房间已断开', '房主已关闭房间或网络连接中断');
           this.leaveRoom(false);
         }
@@ -521,8 +549,11 @@ export class P2PRoomClient {
     if (this.isHost && notifyGuests) {
       this.broadcastToGuests({ type: 'room_closed', reason: '房主已解散房间' });
     }
+    const wasPassenger = this.localPassengerOf !== null;
     this.cleanupPeerOnly();
     this.hostEntities.clear();
+    this.hostProjectiles = [];
+    this.matchEndAt = 0;
     this.guestMembers = [];
     this.status = 'disconnected';
     this.phase = 'idle';
@@ -536,7 +567,10 @@ export class P2PRoomClient {
     this.localPassengerOf = null;
     this.localSeatIndex = -1;
     this.localPassengerVehicle = null;
-    this.callbacks.onPassengerSync?.({ driverId: null, seatIndex: -1, driverVehicle: null, autoParachute: false });
+    // 仅在确实处于乘客状态时才通知引擎离座，避免建房/进房误清除正在驾驶的载具
+    if (wasPassenger) {
+      this.callbacks.onPassengerSync?.({ driverId: null, seatIndex: -1, driverVehicle: null, autoParachute: false });
+    }
     this.callbacks.onWorldSnapshot?.([], this.localPlayerId);
     this.emitRoom();
   }
@@ -578,9 +612,12 @@ export class P2PRoomClient {
     }
 
     this.phase = 'playing';
+    this.hostProjectiles = [];
     this.redScore = 0;
     this.blueScore = 0;
     this.timeRemainingSec = this.config.mode === 'coop_roam' ? 0 : this.config.matchDurationSec;
+    this.matchEndAt =
+      this.config.mode === 'coop_roam' ? 0 : this.platform.now() + this.config.matchDurationSec * 1000;
 
     if (this.config.mode === 'team') {
       this.rebalanceHumanTeams();
@@ -601,6 +638,7 @@ export class P2PRoomClient {
       e.kills = 0;
       e.deaths = 0;
       e.respawnTimer = 0;
+      e.respawnAt = 0;
       if (this.config.mode !== 'coop_roam') {
         const sp = getSafeSpawnPoint(e.team, idx++, this.collider);
         e.x = sp.x;
@@ -713,6 +751,7 @@ export class P2PRoomClient {
       kills: 0,
       deaths: 0,
       respawnTimer: 0,
+      respawnAt: 0,
       lastFireAt: 0,
       botHomeX: sp.x,
       botHomeZ: sp.z,
@@ -917,6 +956,7 @@ export class P2PRoomClient {
         kills: 0,
         deaths: 0,
         respawnTimer: 0,
+        respawnAt: 0,
         lastFireAt: 0,
         botHomeX: sp.x,
         botHomeZ: sp.z,
@@ -981,6 +1021,7 @@ export class P2PRoomClient {
 
   private handleHostMessage(msg: HostToClientMsg) {
     if (msg.type === 'welcome') {
+      this.clearJoinTimer();
       this.localPlayerId = msg.playerId;
       this.roomCode = msg.roomCode;
       this.phase = msg.phase;
@@ -1074,6 +1115,8 @@ export class P2PRoomClient {
       });
     } else if (msg.type === 'match_end') {
       this.phase = 'ended';
+    this.hostProjectiles = [];
+    this.matchEndAt = 0;
       this.emitRoom();
       this.callbacks.onMatchEnd?.(msg.result);
     } else if (msg.type === 'room_closed') {
@@ -1117,90 +1160,180 @@ export class P2PRoomClient {
     const fx = Math.sin(yaw) * cosP;
     const fy = Math.sin(clampedPitch);
     const fz = Math.cos(yaw) * cosP;
-    const baseHitRadius = Math.max(2.6, weapon.splashRadius * 0.7);
 
-    // 先做 3D 实心墙/建筑/树木遮挡射线检测：墙体之后的敌人绝不能被隔墙打穿！
-    const shootY = y + 1.35;
-    let maxEffectiveRange = weapon.maxRange;
-    if (this.collider) {
-      const wallHit = this.collider.raycastSolid(
-        x + fx * 0.8,
-        shootY + fy * 0.8,
-        z + fz * 0.8,
-        x + fx * weapon.maxRange,
-        shootY + fy * weapon.maxRange,
-        z + fz * weapon.maxRange,
-        0.5,
-      );
-      if (wallHit) {
-        maxEffectiveRange = wallHit.dist + 0.8;
-      }
+    // 与本地 CombatSystem 保持一致的枪口起点、弹道重力步进、最近目标首次碰撞与溅射范围衰减
+    const originX = x + Math.sin(yaw) * 1.4;
+    const originY = y + 1.45;
+    const originZ = z + Math.cos(yaw) * 1.4;
+
+    // 飞行时间明显的抛物线溅射武器（荷花水炮）按房主时钟逐帧推进，使移动靶预判与落点时机和本地练习场一致
+    if (weapon.gravity > 0 && weapon.splashRadius > 0) {
+      this.hostProjectiles.push({
+        shooterId,
+        weaponId,
+        originX,
+        originY,
+        originZ,
+        x: originX,
+        y: originY,
+        z: originZ,
+        vx: fx * weapon.projectileSpeed,
+        vy: fy * weapon.projectileSpeed,
+        vz: fz * weapon.projectileSpeed,
+        life: 3.2,
+      });
+      return;
     }
 
-    // 3D 射线到目标中心点距离判定（支持高空直升机防空对射，且仅判定墙体之前的可视目标）
+    const targets = this.collectHostBallisticTargets(shooterId, shooter.team, weapon);
+    const trace = traceAuthoritativeBallistic({
+      originX,
+      originY,
+      originZ,
+      dirX: fx,
+      dirY: fy,
+      dirZ: fz,
+      weapon,
+      targets,
+      collider: this.collider,
+      getGroundHeight: (gx, gz) => sampleTerrain(gx, gz)?.height ?? 1.2,
+    });
+
+    if (weapon.splashRadius > 0) {
+      for (const sh of trace.splashHits) {
+        const target = this.hostEntities.get(sh.targetId);
+        if (target?.alive) {
+          this.applyAuthoritativeHitToTarget(shooter, target, weaponId, sh.damage);
+        }
+      }
+    } else if (trace.directTargetId) {
+      const target = this.hostEntities.get(trace.directTargetId);
+      if (target?.alive) {
+        this.applyAuthoritativeHitToTarget(shooter, target, weaponId, weapon.damage);
+      }
+    }
+  }
+
+  private collectHostBallisticTargets(
+    shooterId: string,
+    shooterTeam: TeamId,
+    weapon: (typeof WEAPON_MAP)[WeaponId],
+  ): BallisticTarget[] {
+    const defaultHitRadius = Math.max(2.15, 1.85 + weapon.projectileRadius);
+    const targets: BallisticTarget[] = [];
     for (const target of this.hostEntities.values()) {
       if (target.id === shooterId || !target.alive) continue;
-      if (this.config.mode === 'team' && target.team === shooter.team) continue;
+      if (this.config.mode === 'team' && target.team === shooterTeam) continue;
+      targets.push({
+        id: target.id,
+        x: target.x,
+        y: target.y + 1.25,
+        z: target.z,
+        hitRadius: target.vehicle === 'heli' ? 4.2 : defaultHitRadius,
+        splashX: target.x,
+        splashY: target.y,
+        splashZ: target.z,
+      });
+    }
+    return targets;
+  }
 
-      const targetRadius = target.vehicle === 'heli' ? Math.max(baseHitRadius, 4.2) : baseHitRadius;
-      const hitRes = compute3DRayHit(
-        x,
-        shootY,
-        z,
-        fx,
-        fy,
-        fz,
-        maxEffectiveRange,
-        target.x,
-        target.y + 1.25,
-        target.z,
-        targetRadius,
-      );
-      if (hitRes.hit) {
-        // 对战中击中载具司机时优先扣减载具耐久（鹊华长弓对直升机 1.5 倍防空伤害！）
-        if (target.vehicleMaxHp > 0 && target.vehicleHp > 0 && getVehicleMaxPassengers(target.vehicle) > 0) {
-          const antiAir = weaponId === 'quehua_bow' && target.vehicle === 'heli' ? 1.5 : 1.0;
-          const vDmg = Math.round(weapon.damage * antiAir);
-          target.vehicleHp = Math.max(0, target.vehicleHp - vDmg);
-          const destroyed = target.vehicleHp <= 0;
-          this.notifyShooterHit(shooterId, vDmg, destroyed, 'vehicle');
-          if (target.id === this.localPlayerId) this.localVehicleHp = target.vehicleHp;
-          if (destroyed) {
-            const vName = getVehicleCnName(target.vehicle);
-            const autoPara = target.vehicle === 'heli' && target.y > 5.5;
-            const feedText = `🔥 ${shooter.name} 用 ${weapon.name} 击毁了 ${target.name} 的${vName}！`;
-            this.callbacks.onKillFeed?.({ id: this.msgSeq++, text: feedText, team: shooter.team, timestamp: Date.now() });
-            this.broadcastToGuests({ type: 'kill_feed', text: feedText, team: shooter.team });
-            this.ejectPassengersOf(target.id, autoPara, `${vName}被击毁，已安全弹出！`);
-            target.vehicle = autoPara ? 'parachute' : 'foot';
-            target.vehicleMaxHp = 0;
-            const driverReason = `${vName}被击毁，${autoPara ? '已自动张开降落伞迫降！' : '已安全跳车！'}`;
-            if (target.id === this.localPlayerId) {
-              this.localVehicleHp = 0;
-              this.localVehicleMaxHp = 0;
-              this.callbacks.onForceExitVehicle?.(autoPara, driverReason);
-            } else if (!target.isBot) {
-              const conn = this.guestConns.get(target.id);
-              if (conn?.open) {
-                conn.send({
-                  type: 'force_exit_vehicle',
-                  targetId: target.id,
-                  autoParachute: autoPara,
-                  reason: driverReason,
-                } satisfies HostToClientMsg);
+  private updateHostProjectiles(dt: number) {
+    if (this.hostProjectiles.length === 0) return;
+    for (let i = this.hostProjectiles.length - 1; i >= 0; i--) {
+      const p = this.hostProjectiles[i];
+      const shooter = this.hostEntities.get(p.shooterId);
+      const weapon = WEAPON_MAP[p.weaponId] || WEAPON_MAP.lotus_mortar;
+      p.life -= dt;
+
+      const prevX = p.x;
+      const prevY = p.y;
+      const prevZ = p.z;
+      p.vy -= weapon.gravity * dt;
+      const nextX = prevX + p.vx * dt;
+      const nextY = prevY + p.vy * dt;
+      const nextZ = prevZ + p.vz * dt;
+      const groundY = Math.max(0.4, sampleTerrain(nextX, nextZ)?.height ?? 1.2);
+
+      const targets = shooter ? this.collectHostBallisticTargets(p.shooterId, shooter.team, weapon) : [];
+      const seg = resolveBallisticSegment(prevX, prevY, prevZ, nextX, nextY, nextZ, targets, this.collider, groundY);
+      const outOfRange = Math.hypot(nextX - p.originX, nextY - p.originY, nextZ - p.originZ) > weapon.maxRange;
+
+      if (seg.hitType !== 'none' || outOfRange || p.life <= 0) {
+        if (shooter && this.phase === 'playing') {
+          if (weapon.splashRadius > 0) {
+            for (const tgt of targets) {
+              const tx = tgt.splashX ?? tgt.x;
+              const ty = tgt.splashY ?? tgt.y;
+              const tz = tgt.splashZ ?? tgt.z;
+              const dist = Math.hypot(tx - seg.impactX, ty - seg.impactY, tz - seg.impactZ);
+              if (tgt.id === seg.targetId || dist <= weapon.splashRadius) {
+                const falloff = tgt.id === seg.targetId ? 1 : computeSplashFalloff(dist, weapon.splashRadius);
+                const entity = this.hostEntities.get(tgt.id);
+                if (entity?.alive) {
+                  this.applyAuthoritativeHitToTarget(shooter, entity, p.weaponId, Math.round(weapon.damage * falloff));
+                }
               }
             }
-            // 载具爆破附带轻微震荡扣血（不直接秒杀）
-            if (target.hp > 25) {
-              target.hp -= 20;
-              if (target.id === this.localPlayerId) this.localHp = target.hp;
+          } else if (seg.targetId) {
+            const entity = this.hostEntities.get(seg.targetId);
+            if (entity?.alive) {
+              this.applyAuthoritativeHitToTarget(shooter, entity, p.weaponId, weapon.damage);
             }
           }
-        } else {
-          this.applyDamage(shooter, target, weapon.damage, weapon.name);
         }
-        if (weapon.splashRadius <= 0) break;
+        this.hostProjectiles.splice(i, 1);
+      } else {
+        p.x = nextX;
+        p.y = nextY;
+        p.z = nextZ;
       }
+    }
+  }
+
+  private applyAuthoritativeHitToTarget(shooter: HostEntity, target: HostEntity, weaponId: WeaponId, baseDamage: number) {
+    const weapon = WEAPON_MAP[weaponId] || WEAPON_MAP.spring_blaster;
+    // 对战中击中载具司机时优先扣减载具耐久（鹊华长弓对直升机 1.5 倍防空伤害！）
+    if (target.vehicleMaxHp > 0 && target.vehicleHp > 0 && getVehicleMaxPassengers(target.vehicle) > 0) {
+      const antiAir = weaponId === 'quehua_bow' && target.vehicle === 'heli' ? 1.5 : 1.0;
+      const vDmg = Math.round(baseDamage * antiAir);
+      target.vehicleHp = Math.max(0, target.vehicleHp - vDmg);
+      const destroyed = target.vehicleHp <= 0;
+      this.notifyShooterHit(shooter.id, vDmg, destroyed, 'vehicle');
+      if (target.id === this.localPlayerId) this.localVehicleHp = target.vehicleHp;
+      if (destroyed) {
+        const vName = getVehicleCnName(target.vehicle);
+        const autoPara = target.vehicle === 'heli' && target.y > 5.5;
+        const feedText = `🔥 ${shooter.name} 用 ${weapon.name} 击毁了 ${target.name} 的${vName}！`;
+        this.callbacks.onKillFeed?.({ id: this.msgSeq++, text: feedText, team: shooter.team, timestamp: Date.now() });
+        this.broadcastToGuests({ type: 'kill_feed', text: feedText, team: shooter.team });
+        this.ejectPassengersOf(target.id, autoPara, `${vName}被击毁，已安全弹出！`);
+        target.vehicle = autoPara ? 'parachute' : 'foot';
+        target.vehicleMaxHp = 0;
+        const driverReason = `${vName}被击毁，${autoPara ? '已自动张开降落伞迫降！' : '已安全跳车！'}`;
+        if (target.id === this.localPlayerId) {
+          this.localVehicleHp = 0;
+          this.localVehicleMaxHp = 0;
+          this.callbacks.onForceExitVehicle?.(autoPara, driverReason);
+        } else if (!target.isBot) {
+          const conn = this.guestConns.get(target.id);
+          if (conn?.open) {
+            conn.send({
+              type: 'force_exit_vehicle',
+              targetId: target.id,
+              autoParachute: autoPara,
+              reason: driverReason,
+            } satisfies HostToClientMsg);
+          }
+        }
+        // 载具爆破附带轻微震荡扣血（不直接秒杀）
+        if (target.hp > 25) {
+          target.hp -= 20;
+          if (target.id === this.localPlayerId) this.localHp = target.hp;
+        }
+      }
+    } else {
+      this.applyDamage(shooter, target, baseDamage, weapon.name);
     }
   }
 
@@ -1228,6 +1361,7 @@ export class P2PRoomClient {
       target.alive = false;
       target.deaths++;
       target.respawnTimer = 3.0;
+      target.respawnAt = this.platform.now() + 3000;
       shooter.kills++;
 
       if (target.id === this.localPlayerId) {
@@ -1339,6 +1473,8 @@ export class P2PRoomClient {
   private finishMatch() {
     if (this.phase !== 'playing') return;
     this.phase = 'ended';
+    this.hostProjectiles = [];
+    this.matchEndAt = 0;
 
     const rankings = Array.from(this.hostEntities.values())
       .map((e) => ({
@@ -1407,24 +1543,30 @@ export class P2PRoomClient {
       }
 
       if (this.phase === 'playing' && this.config.mode !== 'coop_roam') {
+        const now = this.platform.now();
         const prevSec = Math.ceil(this.timeRemainingSec);
-        this.timeRemainingSec = Math.max(0, this.timeRemainingSec - dt);
+        if (this.matchEndAt > 0) {
+          this.timeRemainingSec = Math.max(0, (this.matchEndAt - now) / 1000);
+        } else {
+          this.timeRemainingSec = Math.max(0, this.timeRemainingSec - dt);
+        }
         if (this.timeRemainingSec <= 0) {
           this.finishMatch();
         } else if (Math.ceil(this.timeRemainingSec) !== prevSec) {
           this.emitRoom();
         }
 
-        // 复活计时
+        // 复活计时（使用真实时钟截止时间，不受房主掉帧影响）
         let slot = 0;
         for (const e of this.hostEntities.values()) {
           slot++;
           if (!e.alive) {
-            e.respawnTimer -= dt;
+            e.respawnTimer = e.respawnAt > 0 ? Math.max(0, (e.respawnAt - now) / 1000) : Math.max(0, e.respawnTimer - dt);
             if (e.respawnTimer <= 0) {
               const sp = getSafeSpawnPoint(e.team, slot, this.collider);
               e.hp = 100;
               e.alive = true;
+              e.respawnAt = 0;
               e.x = sp.x;
               e.y = 2;
               e.z = sp.z;
@@ -1443,6 +1585,7 @@ export class P2PRoomClient {
           }
         }
 
+        this.updateHostProjectiles(dt);
         this.updateHostBots(dt);
       }
 

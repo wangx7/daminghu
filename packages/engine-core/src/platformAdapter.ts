@@ -16,6 +16,7 @@ export interface PlatformAdapter {
   onVisibilityChange(cb: (hidden: boolean) => void): () => void;
   getDevicePixelRatio(): number;
   isMobileViewport(): boolean;
+  vibrate?(pattern: number | number[]): void;
 }
 
 export function createBrowserPlatformAdapter(): PlatformAdapter {
@@ -77,6 +78,15 @@ export function createBrowserPlatformAdapter(): PlatformAdapter {
         window.innerWidth <= 960 ||
         (typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent))
       );
+    },
+    vibrate(pattern: number | number[]): void {
+      try {
+        if (typeof navigator !== 'undefined') {
+          navigator.vibrate?.(pattern);
+        }
+      } catch {
+        // ignore vibration errors
+      }
     },
   };
 }

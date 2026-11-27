@@ -11,6 +11,14 @@ import {
   type WeaponConfig,
 } from '@daminghu/shared';
 import type { GuofengBgmEngine } from './bgmEngine';
+import {
+  computeSplashFalloff,
+  resolveBallisticSegment,
+  selectBestAimTarget,
+  type AimCandidate,
+  type BallisticTarget,
+} from './combatBallistics';
+import type { WorldCollider } from './legacy/collider.js';
 import { sampleTerrain } from './legacy/map_data.js';
 import { disposeObject3D } from './threeDispose';
 
@@ -216,7 +224,7 @@ export class CombatSystem {
 
   private feedSeq = 1;
   private hitSeq = 1;
-  private collider: any;
+  private collider: WorldCollider | null;
   private playerName = '团团';
   private projGeoCache = new Map<string, THREE.BufferGeometry>();
   private projMatCache = new Map<string, THREE.MeshBasicMaterial>();
@@ -227,7 +235,7 @@ export class CombatSystem {
   public onHitFeedback?: (event: HitFeedbackEvent) => void;
   public onPlayerDamaged?: (damage: number, remainingHp: number) => void;
 
-  constructor(scene: THREE.Scene, bgm: GuofengBgmEngine, collider?: any) {
+  constructor(scene: THREE.Scene, bgm: GuofengBgmEngine, collider?: WorldCollider | null) {
     this.scene = scene;
     this.bgm = bgm;
     this.collider = collider ?? null;
@@ -459,64 +467,64 @@ export class CombatSystem {
     this.bots = [];
   }
 
-  /** 准星中心射线目标锁定：返回精确瞄准点、目标名与距离，支持随距离微幅放宽磁吸半径 */
+  /** 返回当前场景内可被准星锁定的 AI 靶子与飞鸟/锦鲤候选列表 */
+  getAimCandidates(): AimCandidate[] {
+    const out: AimCandidate[] = [];
+    for (const bot of this.bots) {
+      if (!bot.alive) continue;
+      if (this.playerTeam !== 'none' && bot.team === this.playerTeam) continue;
+      out.push({
+        id: `bot:${bot.id}`,
+        x: bot.pos.x,
+        y: bot.pos.y + 1.35,
+        z: bot.pos.z,
+        kind: 'enemy',
+        name: bot.name,
+        hpRatio: bot.hp / bot.maxHp,
+        directRadius: 1.2,
+        assistBaseRadius: 1.9,
+        assistMaxRadius: 4.0,
+      });
+    }
+    for (let i = 0; i < this.wildlife.length; i++) {
+      const w = this.wildlife[i];
+      if (!w.alive) continue;
+      out.push({
+        id: `wildlife:${i}`,
+        x: w.root.position.x,
+        y: w.root.position.y,
+        z: w.root.position.z,
+        kind: 'wildlife',
+        name: w.name,
+        directRadius: 1.35,
+        assistBaseRadius: w.kind === 'bird' ? 2.2 : 2.1,
+        assistMaxRadius: 4.2,
+      });
+    }
+    return out;
+  }
+
+  /** 准星中心射线目标锁定：优先准星直指与模式优先目标，再按偏离角度磁吸 */
   findAimTarget(
     rayOrigin: THREE.Vector3,
     rayDir: THREE.Vector3,
     maxRange: number,
   ): { point: THREE.Vector3; kind: 'enemy' | 'wildlife'; name: string; distance: number; hpRatio?: number } | null {
-    let bestT = maxRange;
-    let best: { point: THREE.Vector3; kind: 'enemy' | 'wildlife'; name: string; distance: number; hpRatio?: number } | null = null;
-
-    const testCandidate = (
-      cx: number,
-      cy: number,
-      cz: number,
-      baseRadius: number,
-      maxRadius: number,
-      kind: 'enemy' | 'wildlife',
-      name: string,
-      hpRatio?: number,
-    ) => {
-      const rx = cx - rayOrigin.x;
-      const ry = cy - rayOrigin.y;
-      const rz = cz - rayOrigin.z;
-      const t = rx * rayDir.x + ry * rayDir.y + rz * rayDir.z;
-      if (t <= 2 || t >= bestT) return;
-      const radius = Math.min(maxRadius, baseRadius + t * 0.024);
-      const px = rayOrigin.x + rayDir.x * t - cx;
-      const py = rayOrigin.y + rayDir.y * t - cy;
-      const pz = rayOrigin.z + rayDir.z * t - cz;
-      if (px * px + py * py + pz * pz <= radius * radius) {
-        bestT = t;
-        best = {
-          point: new THREE.Vector3(cx, cy, cz),
-          kind,
-          name,
-          distance: t,
-          hpRatio,
-        };
-      }
+    const best = selectBestAimTarget({
+      rayOrigin,
+      rayDir,
+      maxRange,
+      candidates: this.getAimCandidates(),
+      mode: this.mode,
+    });
+    if (!best) return null;
+    return {
+      point: new THREE.Vector3(best.x, best.y, best.z),
+      kind: best.kind,
+      name: best.name,
+      distance: best.distance,
+      hpRatio: best.hpRatio,
     };
-
-    for (const bot of this.bots) {
-      if (!bot.alive) continue;
-      if (this.playerTeam !== 'none' && bot.team === this.playerTeam) continue;
-      testCandidate(bot.pos.x, bot.pos.y + 1.35, bot.pos.z, 1.9, 4.0, 'enemy', bot.name, bot.hp / bot.maxHp);
-    }
-    for (const w of this.wildlife) {
-      if (!w.alive) continue;
-      testCandidate(
-        w.root.position.x,
-        w.root.position.y,
-        w.root.position.z,
-        w.kind === 'bird' ? 2.6 : 2.5,
-        4.8,
-        'wildlife',
-        w.name,
-      );
-    }
-    return best;
   }
 
   /** 准星中心射线目标距离吸附：优先锁定准星正对的 AI 靶子或飞鸟锦鲤，消除第三人称视差 */
@@ -837,7 +845,7 @@ export class CombatSystem {
     }
     this.scoreboard.activeTargets = aliveCount;
 
-    // 2. 更新弹道与命中判定（含 3D 实体墙/建筑/树木防穿墙检测 + 飞鸟与锦鲤捕获）
+    // 2. 更新弹道与命中判定（全路径连续碰撞 CCD：同时比较墙体、地面与所有目标的首次接触位置，杜绝低帧率穿靶与背后墙截胡）
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
       p.life -= dt;
@@ -849,73 +857,82 @@ export class CombatSystem {
       this._tmpLook.copy(p.mesh.position).add(p.vel);
       p.mesh.lookAt(this._tmpLook);
 
-      const groundY = Math.max(0.4, this.getTerrainHeight(p.mesh.position.x, p.mesh.position.z));
-      let hit = false;
+      const curX = p.mesh.position.x;
+      const curY = p.mesh.position.y;
+      const curZ = p.mesh.position.z;
+      const groundY = Math.max(0.4, this.getTerrainHeight(curX, curZ));
 
-      // 优先检测子弹是否撞到墙垣/建筑/树木/桥面（严禁穿墙！）
-      if (this.collider) {
-        const wallHit = this.collider.raycastSolid(
-          prevX,
-          prevY,
-          prevZ,
-          p.mesh.position.x,
-          p.mesh.position.y,
-          p.mesh.position.z,
-          0.4,
-        );
-        if (wallHit) {
-          p.mesh.position.set(wallHit.x, wallHit.y, wallHit.z);
-          hit = true;
-        }
-      }
-
-    // 命中飞鸟 / 锦鲤检测（撞墙的子弹不再穿透命中）
-      if (!hit && p.fromPlayer) {
-        for (const w of this.wildlife) {
+      const segTargets: BallisticTarget[] = [];
+      if (p.fromPlayer) {
+        for (let wi = 0; wi < this.wildlife.length; wi++) {
+          const w = this.wildlife[wi];
           if (!w.alive) continue;
-          const hitRadius = (w.kind === 'bird' ? 2.4 : 2.6) + p.weapon.projectileRadius;
-          if (p.mesh.position.distanceTo(w.root.position) < hitRadius) {
-            this.catchWildlife(w, p.weapon);
-            hit = true;
-            break;
+          segTargets.push({
+            id: `w:${wi}`,
+            x: w.root.position.x,
+            y: w.root.position.y,
+            z: w.root.position.z,
+            hitRadius: (w.kind === 'bird' ? 2.4 : 2.6) + p.weapon.projectileRadius,
+          });
+        }
+      } else if (p.ownerTeam === 'none' || p.ownerTeam !== this.playerTeam) {
+        segTargets.push({
+          id: '__player__',
+          x: playerPos.x,
+          y: playerPos.y + 1.15,
+          z: playerPos.z,
+          hitRadius: 1.35 + p.weapon.projectileRadius,
+        });
+      }
+      for (let bi = 0; bi < this.bots.length; bi++) {
+        const bot = this.bots[bi];
+        if (!bot.alive) continue;
+        if (p.ownerTeam !== 'none' && bot.team === p.ownerTeam) continue;
+        segTargets.push({
+          id: `b:${bi}`,
+          x: bot.pos.x,
+          y: bot.pos.y + 1.3,
+          z: bot.pos.z,
+          hitRadius: 1.85 + p.weapon.projectileRadius,
+        });
+      }
+
+      const seg = resolveBallisticSegment(prevX, prevY, prevZ, curX, curY, curZ, segTargets, this.collider, groundY);
+      let hit = seg.hitType !== 'none';
+      let directHitBotIndex = -1;
+
+      if (hit) {
+        p.mesh.position.set(seg.impactX, seg.impactY, seg.impactZ);
+        if (seg.hitType === 'target' && seg.targetId) {
+          if (seg.targetId === '__player__') {
+            const dmg = this.mode === 'practice_solo' ? 10 : 12;
+            this.playerHp = Math.max(0, this.playerHp - dmg);
+            this.bgm.playPlayerHurt();
+            this.onPlayerDamaged?.(dmg, this.playerHp);
+            if (this.playerHp <= 0) {
+              this.playerHp = this.playerMaxHp;
+              if (p.ownerTeam === 'blue') this.scoreboard.blueScore++;
+              else if (p.ownerTeam === 'red') this.scoreboard.redScore++;
+              this.emitFeed(`${this.playerName} 被游侠水弹击中，已迅速重整状态！`, p.ownerTeam);
+            }
+          } else if (seg.targetId.startsWith('w:')) {
+            const wi = Number(seg.targetId.slice(2));
+            const w = this.wildlife[wi];
+            if (w?.alive) {
+              this.catchWildlife(w, p.weapon);
+            }
+          } else if (seg.targetId.startsWith('b:')) {
+            const bi = Number(seg.targetId.slice(2));
+            const bot = this.bots[bi];
+            if (bot?.alive) {
+              directHitBotIndex = bi;
+              this.applyDamageToBot(bot, p.weapon.damage, p.fromPlayer, p.ownerTeam, p.vel, p.weapon.knockback);
+            }
           }
         }
       }
 
-      // 命中玩家检测（AI 还击）
-      if (!hit && !p.fromPlayer && (p.ownerTeam === 'none' || p.ownerTeam !== this.playerTeam)) {
-        this._tmpBotCenter.set(playerPos.x, playerPos.y + 1.15, playerPos.z);
-        if (p.mesh.position.distanceTo(this._tmpBotCenter) < 1.35 + p.weapon.projectileRadius) {
-          const dmg = this.mode === 'practice_solo' ? 10 : 12;
-          this.playerHp = Math.max(0, this.playerHp - dmg);
-          this.bgm.playPlayerHurt();
-          this.onPlayerDamaged?.(dmg, this.playerHp);
-          if (this.playerHp <= 0) {
-            this.playerHp = this.playerMaxHp;
-            if (p.ownerTeam === 'blue') this.scoreboard.blueScore++;
-            else if (p.ownerTeam === 'red') this.scoreboard.redScore++;
-            this.emitFeed(`${this.playerName} 被游侠水弹击中，已迅速重整状态！`, p.ownerTeam);
-          }
-          hit = true;
-        }
-      }
-
-      // 命中 Bot 检测
-      if (!hit) {
-        for (const bot of this.bots) {
-          if (!bot.alive) continue;
-          if (p.ownerTeam !== 'none' && bot.team === p.ownerTeam) continue;
-          this._tmpBotCenter.set(bot.pos.x, bot.pos.y + 1.3, bot.pos.z);
-          const dist = p.mesh.position.distanceTo(this._tmpBotCenter);
-          if (dist < 1.85 + p.weapon.projectileRadius) {
-            this.applyDamageToBot(bot, p.weapon.damage, p.fromPlayer, p.ownerTeam, p.vel, p.weapon.knockback);
-            hit = true;
-            break;
-          }
-        }
-      }
-
-      if (!hit && (p.mesh.position.y <= groundY || p.mesh.position.distanceTo(p.origin) > p.weapon.maxRange || p.life <= 0)) {
+      if (!hit && (p.mesh.position.distanceTo(p.origin) > p.weapon.maxRange || p.life <= 0)) {
         hit = true;
       }
 
@@ -931,12 +948,14 @@ export class CombatSystem {
               }
             }
           }
-          for (const bot of this.bots) {
+          for (let bi = 0; bi < this.bots.length; bi++) {
+            if (bi === directHitBotIndex) continue;
+            const bot = this.bots[bi];
             if (!bot.alive) continue;
             if (p.ownerTeam !== 'none' && bot.team === p.ownerTeam) continue;
             const d = p.mesh.position.distanceTo(bot.pos);
             if (d <= p.weapon.splashRadius) {
-              const falloff = 1 - (d / p.weapon.splashRadius) * 0.55;
+              const falloff = computeSplashFalloff(d, p.weapon.splashRadius);
               const splashDir = bot.pos.clone().sub(p.mesh.position);
               if (splashDir.lengthSq() < 0.01) splashDir.copy(p.vel);
               this.applyDamageToBot(

@@ -33,6 +33,7 @@ function choose(idx: number) {
   if (idx === question.value.answerIndex) {
     solvedCount.value++;
     store.totalQuizSolved++;
+    store.persistUnlocks();
   }
 }
 

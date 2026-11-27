@@ -61,6 +61,7 @@ const isOnlineRoom = computed(() => store.room.status === 'connected');
 const isOnlinePlaying = computed(() => isOnlineRoom.value && store.room.phase === 'playing');
 const onlineHumanCount = computed(() => store.room.members.filter((m) => !m.isBot).length);
 const isShowcaseTab = computed(() => store.garageTab === 'skins' || store.garageTab === 'weapons');
+const showShowcase3D = computed(() => store.garageOpen && isShowcaseTab.value);
 const isFullscreen = ref(false);
 
 function syncFullscreenState() {
@@ -513,11 +514,21 @@ function downloadPostcard() {
         <div class="garage-left">
           <div class="garage-brand">
             <span class="brand-tag">大明湖 · 3D 试衣与军械台</span>
-            <h3>{{ previewSkin.name }}</h3>
-            <p>{{ previewWeapon ? `手持：${previewWeapon.name}（${previewWeapon.role}）` : '当前状态：空手悠闲漫游' }}</p>
+            <template v-if="store.garageTab === 'weapons'">
+              <h3>{{ previewWeapon ? previewWeapon.name : '空手悠闲漫游' }}</h3>
+              <p>{{ previewWeapon ? `${previewWeapon.role} · 皮肤：${previewSkin.name}` : `当前穿戴：${previewSkin.name} · 无对战模式` }}</p>
+            </template>
+            <template v-else>
+              <h3>{{ previewSkin.name }}</h3>
+              <p>{{ previewWeapon ? `手持：${previewWeapon.name}（${previewWeapon.role}）` : '当前状态：空手悠闲漫游' }}</p>
+            </template>
           </div>
 
-          <Showcase3D :skin-id="previewSkinId" :weapon-id="previewWeaponId" />
+          <Showcase3D
+            v-if="showShowcase3D"
+            :skin-id="previewSkinId"
+            :weapon-id="previewWeaponId"
+          />
 
           <div class="garage-left-footer">
             <span class="skin-pill">🕊️ 惊鸟 {{ store.hud.scoreboard.birdsCaught }}</span>
@@ -634,7 +645,7 @@ function downloadPostcard() {
             <div class="card-grid">
               <div class="item-card" :class="{ equipped: store.hud.scoreboard.mode === 'roam' }">
                 <strong>自由漫游（默认）</strong>
-                <span class="card-desc">无对战、空手赏景、21 景点印章打卡。</span>
+                <span class="card-desc">无对战、空手赏景、{{ store.hud.totalLandmarks }} 景点印章打卡。</span>
                 <button class="guofeng-btn" @click="selectMode('roam')">切换自由漫游</button>
               </div>
               <div class="item-card" :class="{ equipped: store.hud.scoreboard.mode === 'hunt' }">
@@ -804,7 +815,7 @@ function downloadPostcard() {
                 <ul class="guide-list">
                   <li><b>四季皮肤</b>：春/夏/秋/冬 4 套主题装扮（同步跑车涂装），左侧 3D 展台可 360° 试穿。</li>
                   <li><b>3 把免费武器</b>：泉水连发枪（均衡）、荷花水炮（范围溅射）、鹊华长弓（远射高伤）。</li>
-                  <li><b>开火与切枪</b>：默认空手；装备武器后可用 <b>左键点射 / 长按右键 / 长按 <kbd>J</kbd></b> 朝屏幕准星连发，按 <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> 秒切武器，按 <kbd>0</kbd> 收枪。</li>
+                  <li><b>开火与切枪</b>：默认空手；装备武器后<b>按下左键即刻开火/按住连发</b>（移动鼠标或右键拖拽瞄准，按 <kbd>Esc</kbd> 释放指针，也支持长按 <kbd>J</kbd>），按 <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> 秒切武器，按 <kbd>0</kbd> 收枪。</li>
                 </ul>
                 <div class="btn-wrap" style="margin-top: 4px">
                   <button class="guofeng-btn" @click="store.garageTab = 'skins'">去试穿皮肤</button>

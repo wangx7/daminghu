@@ -26,7 +26,7 @@ export interface ActiveQuizRequest {
 
 const STORAGE_KEY = 'daminghu_unlocks_v1';
 
-function loadUnlocks(): { skins: SkinId[]; weapons: WeaponId[]; solved: number } {
+function loadUnlocks(): { skins: SkinId[]; weapons: WeaponId[]; solved: number; visitedIds: string[] } {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -35,12 +35,13 @@ function loadUnlocks(): { skins: SkinId[]; weapons: WeaponId[]; solved: number }
         skins: Array.isArray(parsed.skins) ? parsed.skins : ['summer_lotus'],
         weapons: Array.isArray(parsed.weapons) ? parsed.weapons : [],
         solved: typeof parsed.solved === 'number' ? parsed.solved : 0,
+        visitedIds: Array.isArray(parsed.visitedIds) ? parsed.visitedIds.filter((v: unknown) => typeof v === 'string') : [],
       };
     }
   } catch {
     // ignore storage errors
   }
-  return { skins: ['summer_lotus'], weapons: [], solved: 0 };
+  return { skins: ['summer_lotus'], weapons: [], solved: 0, visitedIds: [] };
 }
 
 export const useGameStore = defineStore('game', () => {
@@ -109,6 +110,7 @@ export const useGameStore = defineStore('game', () => {
   const unlockedSkins = ref<SkinId[]>(saved.skins);
   const unlockedWeapons = ref<WeaponId[]>(saved.weapons);
   const totalQuizSolved = ref(saved.solved);
+  const visitedLandmarks = ref<string[]>(saved.visitedIds);
   const quizCategory = ref<QuizCategory>('mixed');
   const antiAddictionEnabled = ref(true);
   const antiAddictionMinutes = ref(15);
@@ -196,6 +198,7 @@ export const useGameStore = defineStore('game', () => {
           skins: unlockedSkins.value,
           weapons: unlockedWeapons.value,
           solved: totalQuizSolved.value,
+          visitedIds: visitedLandmarks.value,
         }),
       );
     } catch {
@@ -230,6 +233,10 @@ export const useGameStore = defineStore('game', () => {
 
   function updateHud(snapshot: HudSnapshot) {
     hud.value = snapshot;
+    if (snapshot.visitedIds.length > visitedLandmarks.value.length) {
+      visitedLandmarks.value = [...snapshot.visitedIds];
+      persistUnlocks();
+    }
   }
 
   function showNotice(title: string, body: string) {
@@ -261,6 +268,7 @@ export const useGameStore = defineStore('game', () => {
     unlockedSkins,
     unlockedWeapons,
     totalQuizSolved,
+    visitedLandmarks,
     quizCategory,
     antiAddictionEnabled,
     antiAddictionMinutes,
