@@ -41,6 +41,56 @@ const equippedWeapon = computed(() => (store.hud.weaponId ? WEAPON_MAP[store.hud
 const isOnlineRoom = computed(() => store.room.status === 'connected');
 const isOnlinePlaying = computed(() => isOnlineRoom.value && store.room.phase === 'playing');
 const onlineHumanCount = computed(() => store.room.members.filter((m) => !m.isBot).length);
+const isShowcaseTab = computed(() => store.garageTab === 'skins' || store.garageTab === 'weapons');
+const isFullscreen = ref(false);
+
+function syncFullscreenState() {
+  const doc = document as Document & { webkitFullscreenElement?: Element | null };
+  isFullscreen.value = !!(document.fullscreenElement || doc.webkitFullscreenElement);
+}
+
+async function toggleFullscreenLandscape() {
+  const doc = document as Document & {
+    webkitFullscreenElement?: Element | null;
+    webkitExitFullscreen?: () => Promise<void> | void;
+  };
+  const el = document.documentElement as HTMLElement & {
+    webkitRequestFullscreen?: () => Promise<void> | void;
+  };
+
+  try {
+    if (document.fullscreenElement || doc.webkitFullscreenElement) {
+      if (document.exitFullscreen) await document.exitFullscreen();
+      else if (doc.webkitExitFullscreen) await doc.webkitExitFullscreen();
+      syncFullscreenState();
+      return;
+    }
+
+    if (el.requestFullscreen) {
+      await el.requestFullscreen();
+    } else if (el.webkitRequestFullscreen) {
+      await el.webkitRequestFullscreen();
+    } else {
+      store.showNotice(
+        '全屏提示',
+        '当前浏览器（如 iOS Safari / 微信）不支持网页一键全屏，请横屏游玩或「添加到主屏幕」以获得纯全屏体验。',
+      );
+      return;
+    }
+
+    syncFullscreenState();
+    const orientation = screen.orientation as ScreenOrientation & { lock?: (mode: string) => Promise<void> };
+    if (orientation?.lock) {
+      try {
+        await orientation.lock('landscape');
+      } catch {
+        // 部分浏览器允许全屏但不允许脚本强制锁屏，忽略即可
+      }
+    }
+  } catch {
+    store.showNotice('全屏提示', '请将手机横向旋转，享受 1:1 大明湖横屏全视野！');
+  }
+}
 
 const matchTimerText = computed(() => {
   const sec = isOnlinePlaying.value ? store.room.timeRemainingSec : store.hud.scoreboard.timeRemainingSec;
@@ -68,6 +118,8 @@ let playSeconds = 0;
 let guardianTimer: number | null = null;
 
 onMounted(() => {
+  document.addEventListener('fullscreenchange', syncFullscreenState);
+  document.addEventListener('webkitfullscreenchange', syncFullscreenState);
   guardianTimer = window.setInterval(() => {
     if (!store.antiAddictionEnabled || store.activeQuiz) return;
     playSeconds++;
@@ -85,6 +137,8 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener('fullscreenchange', syncFullscreenState);
+  document.removeEventListener('webkitfullscreenchange', syncFullscreenState);
   if (guardianTimer !== null) window.clearInterval(guardianTimer);
 });
 
@@ -275,20 +329,32 @@ function downloadPostcard() {
       <span>{{ store.notice.body }}</span>
     </div>
 
-    <!-- 右上角：紧凑小地图 + 联机状态入口 + 统一「车库·设置」入口 -->
+    <!-- 右上角：紧凑小地图 + 唯一统一「玩法」入口（联机中附带快捷聊天键） -->
     <div class="hud-tr">
       <div class="minimap-card interactive">
         <canvas ref="minimapCanvas" class="minimap-canvas" width="220" height="118" @click="store.landmarksOpen = true" />
       </div>
       <div class="tr-btn-row">
         <button
-          class="mp-entry-btn"
-          :class="{ online: isOnlineRoom }"
-          @click="openGarage('multiplayer')"
+          class="mp-chat-toggle mobile-fs-btn"
+          :aria-label="isFullscreen ? '退出全屏' : '全屏横屏'"
+          :title="isFullscreen ? '退出全屏' : '全屏横屏'"
+          @click="toggleFullscreenLandscape"
         >
-          <span>{{ isOnlineRoom ? `🌐 ${store.room.roomCode} (${onlineHumanCount}人)` : '🌐 联机开黑' }}</span>
+          <svg class="m-ico" viewBox="0 0 24 24">
+            <path v-if="!isFullscreen" d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+            <path v-else d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+          </svg>
         </button>
-        <button v-if="isOnlineRoom" class="mp-chat-toggle" @click="quickChatOpen = !quickChatOpen">💬</button>
+        <button v-if="isOnlineRoom" class="mp-chat-toggle" aria-label="快捷聊天" @click="quickChatOpen = !quickChatOpen">💬</button>
+        <button
+          class="garage-entry-btn"
+          :class="{ online: isOnlineRoom }"
+          @click="openGarage(isOnlineRoom ? 'multiplayer' : 'modes')"
+        >
+          <span v-if="isOnlineRoom" class="online-dot" />
+          <span>{{ isOnlineRoom ? `玩法 · ${onlineHumanCount}人` : '玩法' }}</span>
+        </button>
       </div>
       <div v-if="isOnlineRoom && quickChatOpen" class="quick-chat-popover interactive">
         <button
@@ -300,10 +366,6 @@ function downloadPostcard() {
           {{ p }}
         </button>
       </div>
-      <button class="garage-entry-btn" @click="openGarage('skins')">
-        <span class="gear-dot">⚙</span>
-        <span>车库 · 设置</span>
-      </button>
     </div>
 
     <!-- 左下角（手机端自动移至左上角下方避开摇杆）：乘坐载具时显示速度/海拔/氮气仪表 -->
@@ -346,13 +408,13 @@ function downloadPostcard() {
     <!-- 手机端 / 触控设备专属多点触控系统（摇杆 / 跑车双区驾驶 / 飞机爬升下降跳伞 / 划船互动） -->
     <MobileControls :game="game" />
 
-    <!-- ===== QQ 飞车风格 3D 展示配置大厅（统一设置入口） ===== -->
+    <!-- ===== 统一「玩法」大厅（桌面端左 3D 展台 + 右配置；手机端按标签智能隐藏展台，全屏顺滑滚动） ===== -->
     <div v-if="store.garageOpen" class="modal-backdrop" @click.self="store.garageOpen = false">
-      <div class="qq-garage">
-        <!-- 左侧：3D 旋转展示台 -->
+      <div class="qq-garage" :class="{ 'no-mobile-showcase': !isShowcaseTab }">
+        <!-- 左侧：3D 旋转展示台（手机端仅在皮肤库/武器库显示，其他标签自动让出 100% 空间） -->
         <div class="garage-left">
           <div class="garage-brand">
-            <span class="brand-tag">明湖车库 · 3D 试衣与军械台</span>
+            <span class="brand-tag">大明湖 · 3D 试衣与军械台</span>
             <h3>{{ previewSkin.name }}</h3>
             <p>{{ previewWeapon ? `手持：${previewWeapon.name}（${previewWeapon.role}）` : '当前状态：空手悠闲漫游' }}</p>
           </div>
@@ -370,10 +432,10 @@ function downloadPostcard() {
         <div class="garage-right">
           <div class="garage-tabs-bar">
             <div class="garage-tabs">
+              <button :class="{ active: store.garageTab === 'modes' }" @click="store.garageTab = 'modes'">玩法载具</button>
+              <button :class="{ active: store.garageTab === 'multiplayer' }" @click="store.garageTab = 'multiplayer'">联机开黑</button>
               <button :class="{ active: store.garageTab === 'skins' }" @click="store.garageTab = 'skins'">皮肤库</button>
               <button :class="{ active: store.garageTab === 'weapons' }" @click="store.garageTab = 'weapons'">武器库</button>
-              <button :class="{ active: store.garageTab === 'modes' }" @click="store.garageTab = 'modes'">玩法载具</button>
-              <button :class="{ active: store.garageTab === 'multiplayer' }" @click="store.garageTab = 'multiplayer'">联机大厅</button>
               <button :class="{ active: store.garageTab === 'scene' }" @click="store.garageTab = 'scene'">景致丝竹</button>
               <button :class="{ active: store.garageTab === 'guardian' }" @click="store.garageTab = 'guardian'">出题护眼</button>
               <button :class="{ active: store.garageTab === 'guide' }" @click="store.garageTab = 'guide'">游玩教程</button>
@@ -717,5 +779,18 @@ function downloadPostcard() {
 
     <!-- 多人联机对局结算弹窗 -->
     <MatchResultModal :game="game" />
+
+    <!-- 手机竖屏强制横屏引导蒙层（仅触控设备竖屏时显示，支持安卓一键全屏锁横屏） -->
+    <div class="portrait-lock-overlay interactive">
+      <svg class="rotate-phone-ico" viewBox="0 0 24 24">
+        <rect x="5" y="2" width="14" height="20" rx="2.5" />
+        <path d="M12 18h.01" />
+      </svg>
+      <div class="portrait-lock-title">请将手机横屏游玩</div>
+      <div class="portrait-lock-sub">横屏畅享 1:1 真实大明湖全景漫游与全载具操控</div>
+      <button class="primary-btn portrait-lock-btn" @click="toggleFullscreenLandscape">
+        一键全屏横屏（安卓支持）
+      </button>
+    </div>
   </div>
 </template>
